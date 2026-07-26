@@ -71,5 +71,10 @@ public sealed class FileWorkspaceServiceTests
             documentXml.Descendants(),
             element => element.Name.LocalName == "sectPr");
         Assert.True(new FileInfo(path).Length > 1000);
+
+        var openedDocument = await service.OpenTextAsync(path);
+        Assert.True(openedDocument.IsBinary);
+        Assert.True(openedDocument.IsReadOnly);
+        Assert.Equal(string.Empty, openedDocument.Text);
     }
 }

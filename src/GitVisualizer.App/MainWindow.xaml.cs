@@ -177,6 +177,21 @@ public partial class MainWindow : Window
         await viewModel.SelectFileAsync(selectedTreeItem);
     }
 
+    private async void FileTree_OnMouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (selectedTreeItem is null || selectedTreeItem.IsDirectory)
+        {
+            return;
+        }
+
+        await viewModel.SelectFileAsync(selectedTreeItem);
+        if (viewModel.IsExternalOnlyDocument)
+        {
+            await viewModel.OpenFileExternallyAsync(selectedTreeItem.FullPath);
+            e.Handled = true;
+        }
+    }
+
     private void CommitGraph_OnCommitSelected(object? sender, CommitSelectedEventArgs e) =>
         viewModel.SelectCommit(e.Commit);
 

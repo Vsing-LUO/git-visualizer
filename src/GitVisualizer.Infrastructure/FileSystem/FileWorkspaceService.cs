@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
 using GitVisualizer.Core;
@@ -31,6 +32,23 @@ public sealed class FileWorkspaceService : IFileWorkspaceService
             info.IsReadOnly || info.Length > MaxEditableSize || isBinary,
             isBinary,
             info.Length);
+    }
+
+    public Task OpenExternalAsync(string path, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var fullPath = Path.GetFullPath(path);
+        if (!File.Exists(fullPath))
+        {
+            throw new FileNotFoundException("文件不存在。", fullPath);
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = fullPath,
+            UseShellExecute = true
+        });
+        return Task.CompletedTask;
     }
 
     public async Task SaveTextAsync(

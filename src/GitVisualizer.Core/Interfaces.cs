@@ -163,6 +163,7 @@ public interface ISettingsStore
 public interface IFileWorkspaceService
 {
     Task<TextDocument> OpenTextAsync(string path, CancellationToken cancellationToken = default);
+    Task OpenExternalAsync(string path, CancellationToken cancellationToken = default);
     Task SaveTextAsync(
         TextDocument original, string text, bool allowExternalOverwrite,
         CancellationToken cancellationToken = default);

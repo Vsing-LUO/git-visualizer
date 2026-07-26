@@ -10,6 +10,14 @@ namespace GitVisualizer.App.ViewModels;
 
 public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 {
+    private static readonly HashSet<string> ExternalDocumentExtensions =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+            ".pdf", ".rtf", ".odt", ".ods", ".odp",
+            ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg"
+        };
+
     private readonly IGitRepositoryService git;
     private readonly IDiffService diff;
     private readonly IIndexPatchService indexPatch;
@@ -78,6 +86,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool isBusy;
     [ObservableProperty] private bool hasRepository;
     [ObservableProperty] private bool autoSave;
+    [ObservableProperty] private bool isExternalOnlyDocument;
+    [ObservableProperty] private bool canSaveCurrentDocument;
     [ObservableProperty] private TextDocument? currentDocument;
     [ObservableProperty] private FileChange? selectedChange;
     [ObservableProperty] private CommitNode? selectedCommit;
@@ -340,7 +350,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task SaveEditorAsync()
     {
-        if (CurrentDocument is null)
+        if (CurrentDocument is null || !CanSaveCurrentDocument)
         {
             return;
         }
@@ -354,6 +364,30 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         catch (Exception exception)
         {
             StatusText = $"保存失败：{exception.Message}";
+        }
+    }
+
+    [RelayCommand]
+    private async Task OpenCurrentDocumentExternallyAsync()
+    {
+        if (CurrentDocument is not null)
+        {
+            await OpenFileExternallyAsync(CurrentDocument.Path);
+        }
+    }
+
+    public async Task<bool> OpenFileExternallyAsync(string path)
+    {
+        try
+        {
+            await files.OpenExternalAsync(path);
+            StatusText = $"已使用系统默认程序打开 {Path.GetFileName(path)}";
+            return true;
+        }
+        catch (Exception exception)
+        {
+            StatusText = $"无法使用系统默认程序打开：{exception.Message}";
+            return false;
         }
     }
 
@@ -650,13 +684,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         try
         {
             CurrentDocument = await files.OpenTextAsync(path);
-            EditorText = CurrentDocument.IsBinary
-                ? "二进制文件不能在内置编辑器中显示。"
-                : CurrentDocument.Text;
+            IsExternalOnlyDocument =
+                CurrentDocument.IsBinary ||
+                ExternalDocumentExtensions.Contains(Path.GetExtension(path));
+            CanSaveCurrentDocument = !CurrentDocument.IsReadOnly && !IsExternalOnlyDocument;
+            EditorText = IsExternalOnlyDocument ? string.Empty : CurrentDocument.Text;
         }
         catch (Exception exception)
         {
             CurrentDocument = null;
+            IsExternalOnlyDocument = false;
+            CanSaveCurrentDocument = false;
             EditorText = $"无法打开文件：{exception.Message}";
         }
     }
@@ -829,6 +867,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         SelectedHunk = null;
         SelectedConflict = null;
         CurrentDocument = null;
+        IsExternalOnlyDocument = false;
+        CanSaveCurrentDocument = false;
         DiffText = string.Empty;
         EditorText = string.Empty;
         DetailsText = string.Empty;
