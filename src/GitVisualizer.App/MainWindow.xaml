@@ -157,6 +157,8 @@
                                               Click="NewItemType_OnClick"/>
                                     <MenuItem Header="Ⓜ  Markdown 文档 (.md)" Tag=".md"
                                               Click="NewItemType_OnClick"/>
+                                    <MenuItem Header="W  Word 文档 (.docx)" Tag=".docx"
+                                              Click="NewItemType_OnClick"/>
                                     <MenuItem Header="C#  C# 源文件 (.cs)" Tag=".cs"
                                               Click="NewItemType_OnClick"/>
                                     <MenuItem Header="◆  JSON 文件 (.json)" Tag=".json"

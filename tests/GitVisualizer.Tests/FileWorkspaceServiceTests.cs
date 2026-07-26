@@ -1,3 +1,5 @@
+using System.IO.Compression;
+using System.Xml.Linq;
 using GitVisualizer.Infrastructure.FileSystem;
 
 namespace GitVisualizer.Tests;
@@ -35,5 +37,39 @@ public sealed class FileWorkspaceServiceTests
         var document = await service.OpenTextAsync(binaryPath);
         Assert.True(document.IsBinary);
         Assert.True(document.IsReadOnly);
+    }
+
+    [Fact]
+    public async Task CreateDocx_WritesAValidOpenXmlPackage()
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "空白文档.docx");
+        var service = new FileWorkspaceService();
+
+        await service.CreateFileAsync(path);
+
+        using var archive = ZipFile.OpenRead(path);
+        var contentTypes = Assert.Single(
+            archive.Entries, entry => entry.FullName == "[Content_Types].xml");
+        var document = Assert.Single(
+            archive.Entries, entry => entry.FullName == "word/document.xml");
+        Assert.Contains(
+            archive.Entries,
+            entry => entry.FullName == "word/styles.xml");
+        Assert.Contains(
+            archive.Entries,
+            entry => entry.FullName == "word/settings.xml");
+
+        using var contentTypesStream = contentTypes.Open();
+        using var documentStream = document.Open();
+        Assert.Equal(
+            "Types",
+            XDocument.Load(contentTypesStream).Root?.Name.LocalName);
+        var documentXml = XDocument.Load(documentStream);
+        Assert.Equal("document", documentXml.Root?.Name.LocalName);
+        Assert.Contains(
+            documentXml.Descendants(),
+            element => element.Name.LocalName == "sectPr");
+        Assert.True(new FileInfo(path).Length > 1000);
     }
 }

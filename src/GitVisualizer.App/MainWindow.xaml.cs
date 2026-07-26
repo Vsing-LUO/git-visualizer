@@ -421,6 +421,7 @@ public partial class MainWindow : Window
         {
             "folder" => (true, "新建文件夹"),
             ".md" => (false, "README.md"),
+            ".docx" => (false, "新建 Word 文档.docx"),
             ".cs" => (false, "新建类.cs"),
             ".json" => (false, "data.json"),
             ".xml" => (false, "data.xml"),
