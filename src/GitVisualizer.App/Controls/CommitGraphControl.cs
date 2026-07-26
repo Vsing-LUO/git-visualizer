@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
@@ -30,7 +31,7 @@ public sealed class CommitGraphControl : FrameworkElement
         typeof(CommitGraphControl),
         new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsMeasure |
                                             FrameworkPropertyMetadataOptions.AffectsRender,
-            (element, _) => ((CommitGraphControl)element).RebuildLayout()));
+            OnItemsChanged));
 
     public IEnumerable<CommitNode>? Items
     {
@@ -39,6 +40,23 @@ public sealed class CommitGraphControl : FrameworkElement
     }
 
     public event EventHandler<CommitSelectedEventArgs>? CommitSelected;
+
+    private static void OnItemsChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+    {
+        var control = (CommitGraphControl)dependencyObject;
+        if (args.OldValue is INotifyCollectionChanged oldCollection)
+        {
+            oldCollection.CollectionChanged -= control.OnCollectionChanged;
+        }
+        if (args.NewValue is INotifyCollectionChanged newCollection)
+        {
+            newCollection.CollectionChanged += control.OnCollectionChanged;
+        }
+        control.RebuildLayout();
+    }
+
+    private void OnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args) =>
+        RebuildLayout();
 
     protected override Size MeasureOverride(Size availableSize)
     {
