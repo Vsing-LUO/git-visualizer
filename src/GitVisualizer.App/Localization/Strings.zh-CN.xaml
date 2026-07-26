@@ -1,0 +1,30 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:system="clr-namespace:System;assembly=System.Runtime">
+    <system:String x:Key="App.Title">Git 可视化</system:String>
+    <system:String x:Key="Action.Open">打开仓库</system:String>
+    <system:String x:Key="Action.Init">初始化</system:String>
+    <system:String x:Key="Action.Clone">克隆</system:String>
+    <system:String x:Key="Action.Refresh">刷新</system:String>
+    <system:String x:Key="Action.Fetch">获取</system:String>
+    <system:String x:Key="Action.Pull">拉取</system:String>
+    <system:String x:Key="Action.Push">推送</system:String>
+    <system:String x:Key="Action.Save">保存</system:String>
+    <system:String x:Key="Action.Stage">暂存</system:String>
+    <system:String x:Key="Action.Unstage">取消暂存</system:String>
+    <system:String x:Key="Action.Commit">创建提交</system:String>
+    <system:String x:Key="Action.LoadMore">加载更多提交</system:String>
+    <system:String x:Key="Section.Repositories">仓库</system:String>
+    <system:String x:Key="Section.Branches">分支</system:String>
+    <system:String x:Key="Section.Files">文件</system:String>
+    <system:String x:Key="Section.History">提交关系图</system:String>
+    <system:String x:Key="Section.Unstaged">未暂存</system:String>
+    <system:String x:Key="Section.Staged">已暂存</system:String>
+    <system:String x:Key="Tab.Diff">差异</system:String>
+    <system:String x:Key="Tab.Editor">编辑器</system:String>
+    <system:String x:Key="Tab.Details">详情</system:String>
+    <system:String x:Key="Tab.Log">操作日志</system:String>
+    <system:String x:Key="Hint.NoRepository">拖入文件夹，或点击“打开仓库”开始</system:String>
+    <system:String x:Key="Hint.CommitMessage">说明这次修改解决了什么……</system:String>
+    <system:String x:Key="Hint.EquivalentCommand">等价 Git 命令（未实际执行）</system:String>
+</ResourceDictionary>
