@@ -15,6 +15,14 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         this.operationLog = operationLog;
     }
 
+    public Task<bool> IsRepositoryAsync(
+        string path, CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Directory.Exists(path) && Repository.IsValid(Path.GetFullPath(path));
+        }, cancellationToken);
+
     public Task<GitIdentity?> GetIdentityAsync(
         string repositoryPath, CancellationToken cancellationToken = default) =>
         Task.Run(() =>

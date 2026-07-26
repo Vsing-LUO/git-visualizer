@@ -2,6 +2,8 @@ namespace GitVisualizer.Core;
 
 public interface IGitRepositoryService
 {
+    Task<bool> IsRepositoryAsync(
+        string path, CancellationToken cancellationToken = default);
     Task<GitIdentity?> GetIdentityAsync(
         string repositoryPath, CancellationToken cancellationToken = default);
     Task<GitOperationResult> SetIdentityAsync(

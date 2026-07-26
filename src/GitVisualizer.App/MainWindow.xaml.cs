@@ -29,7 +29,7 @@ public partial class MainWindow : Window
         var dialog = new OpenFolderDialog { Title = "选择 Git 仓库" };
         if (dialog.ShowDialog(this) == true)
         {
-            await TryOpenOrInitializeAsync(dialog.FolderName, false);
+            await TryOpenOrInitializeAsync(dialog.FolderName);
         }
     }
 
@@ -38,7 +38,7 @@ public partial class MainWindow : Window
         var dialog = new OpenFolderDialog { Title = "选择要初始化的文件夹" };
         if (dialog.ShowDialog(this) == true)
         {
-            await TryOpenOrInitializeAsync(dialog.FolderName, true);
+            await TryOpenOrInitializeAsync(dialog.FolderName);
         }
     }
 
@@ -62,38 +62,49 @@ public partial class MainWindow : Window
         await viewModel.CloneRepositoryAsync(urlDialog.Value, destination, null);
     }
 
-    private async Task TryOpenOrInitializeAsync(string path, bool forceInitialize)
+    private async Task TryOpenOrInitializeAsync(string path)
     {
         try
         {
-            await viewModel.OpenRepositoryAsync(path);
-        }
-        catch
-        {
-            if (!forceInitialize)
+            if (await viewModel.IsRepositoryAsync(path))
             {
-                var answer = MessageBox.Show(
+                await viewModel.OpenRepositoryAsync(path);
+                return;
+            }
+
+            var answer = MessageBox.Show(
+                this,
+                "此文件夹尚未初始化为 Git 仓库，是否立即初始化并打开？\n\n" + path,
+                "初始化仓库",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (answer != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            var identity = new GitIdentity(
+                Environment.UserName,
+                $"{Environment.UserName}@local.invalid");
+            var result = await viewModel.InitializeRepositoryAsync(path, identity);
+            if (!result.Success)
+            {
+                MessageBox.Show(
                     this,
-                    "此文件夹还不是 Git 仓库。是否在预览确认后初始化？\n\n" + path,
-                    "初始化仓库",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Question);
-                if (answer != MessageBoxResult.Yes)
-                {
-                    return;
-                }
+                    result.ErrorMessage ?? "仓库初始化失败。",
+                    "无法初始化仓库",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
             }
-            var name = Prompt("Git 身份", "提交中显示的用户名：", Environment.UserName);
-            if (name is null)
-            {
-                return;
-            }
-            var email = Prompt("Git 身份", "提交中显示的邮箱：", $"{Environment.UserName}@local.invalid");
-            if (email is null)
-            {
-                return;
-            }
-            await viewModel.InitializeRepositoryAsync(path, new GitIdentity(name, email));
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                $"无法打开所选文件夹：\n\n{exception.Message}",
+                "打开仓库失败",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
         }
     }
 
@@ -101,7 +112,7 @@ public partial class MainWindow : Window
     {
         if (((ListBox)sender).SelectedItem is string path)
         {
-            await viewModel.OpenRepositoryAsync(path);
+            await TryOpenOrInitializeAsync(path);
         }
     }
 
@@ -199,7 +210,7 @@ public partial class MainWindow : Window
         }
         if (paths.Length == 1 && Directory.Exists(paths[0]))
         {
-            await TryOpenOrInitializeAsync(paths[0], false);
+            await TryOpenOrInitializeAsync(paths[0]);
             return;
         }
         if (!viewModel.HasRepository)

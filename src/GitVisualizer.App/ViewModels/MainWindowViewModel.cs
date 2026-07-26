@@ -89,11 +89,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             RecentRepositories.Add(repository);
         }
 
-        if (settings.LastRepository is { } last && Directory.Exists(last))
+        if (settings.LastRepository is { } last &&
+            Directory.Exists(last) &&
+            await git.IsRepositoryAsync(last))
         {
             await OpenRepositoryAsync(last);
         }
     }
+
+    public Task<bool> IsRepositoryAsync(string path) =>
+        git.IsRepositoryAsync(path);
 
     public async Task OpenRepositoryAsync(string path)
     {

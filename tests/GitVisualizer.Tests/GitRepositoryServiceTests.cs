@@ -10,6 +10,20 @@ public sealed class GitRepositoryServiceTests
     private static readonly GitIdentity Identity = new("测试用户", "test@example.invalid");
 
     [Fact]
+    public async Task RepositoryDetection_ChangesAfterInitialization()
+    {
+        using var temporary = new TemporaryDirectory();
+        var service = CreateService();
+
+        Assert.False(await service.IsRepositoryAsync(temporary.Path));
+
+        var initialized = await service.InitializeAsync(temporary.Path, Identity);
+
+        Assert.True(initialized.Success, initialized.ErrorMessage);
+        Assert.True(await service.IsRepositoryAsync(temporary.Path));
+    }
+
+    [Fact]
     public async Task InitializeStageCommitAndHistory_RoundTrips()
     {
         using var temporary = new TemporaryDirectory();
