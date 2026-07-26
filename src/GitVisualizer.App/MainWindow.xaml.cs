@@ -132,6 +132,14 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void RepositorySort_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (((ComboBox)sender).SelectedItem is string mode)
+        {
+            await viewModel.SortRepositoriesAsync(mode);
+        }
+    }
+
     private async void BranchList_OnMouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         if (BranchList.SelectedItem is BranchInfo branch && !branch.IsCurrent && !branch.IsRemote)

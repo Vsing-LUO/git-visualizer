@@ -99,14 +99,24 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
-                    <TextBlock Style="{StaticResource SectionTitle}" Text="{DynamicResource Section.Repositories}"/>
+                    <DockPanel>
+                        <TextBlock Style="{StaticResource SectionTitle}"
+                                   Text="{DynamicResource Section.Repositories}"/>
+                        <ComboBox DockPanel.Dock="Right" Width="100" Height="25" Margin="0,6,8,4"
+                                  ItemsSource="{Binding RepositorySortModes}"
+                                  SelectedItem="{Binding RepositorySortMode, Mode=TwoWay}"
+                                  SelectionChanged="RepositorySort_OnSelectionChanged"
+                                  ToolTip="仓库排序方式"/>
+                    </DockPanel>
                     <ListBox Grid.Row="1" ItemsSource="{Binding RecentRepositories}"
                              SelectedItem="{Binding SelectedRepository, Mode=TwoWay}"
                              SelectionChanged="RecentRepositories_OnSelectionChanged">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <StackPanel>
-                                    <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding}"
+                                               ToolTipService.ShowDuration="60000"/>
                                 </StackPanel>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
@@ -271,7 +281,8 @@
                             <RowDefinition Height="*"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
-                        <ListBox ItemsSource="{Binding OperationLog}">
+                        <ListBox ItemsSource="{Binding OperationLog}"
+                                 SelectedItem="{Binding SelectedOperationLog, Mode=TwoWay}">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <StackPanel Margin="2">

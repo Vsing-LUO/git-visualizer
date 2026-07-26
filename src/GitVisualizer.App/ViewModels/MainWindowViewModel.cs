@@ -24,6 +24,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private Timer? autoSaveTimer;
     private AppSettings settings = AppSettings.Default;
     private int historyLoaded;
+    private int repositorySortVersion;
+    private int nextRepositoryOrder;
+    private readonly Dictionary<string, int> repositoryInsertionOrder =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public MainWindowViewModel(
         IGitRepositoryService git,
@@ -58,9 +62,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public ObservableCollection<OperationLogEntry> OperationLog { get; } = [];
     public ObservableCollection<ConflictFile> Conflicts { get; } = [];
     public ObservableCollection<string> Notices { get; } = [];
+    public IReadOnlyList<string> RepositorySortModes { get; } =
+        ["添加顺序", "创建时间", "修改时间", "文件大小"];
 
     [ObservableProperty] private string activeRepositoryPath = string.Empty;
     [ObservableProperty] private string? selectedRepository;
+    [ObservableProperty] private string repositorySortMode = "添加顺序";
     [ObservableProperty] private string currentBranch = "未打开仓库";
     [ObservableProperty] private string statusText = "拖入文件夹，或点击“打开仓库”开始";
     [ObservableProperty] private string commitMessage = string.Empty;
@@ -74,6 +81,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private TextDocument? currentDocument;
     [ObservableProperty] private FileChange? selectedChange;
     [ObservableProperty] private CommitNode? selectedCommit;
+    [ObservableProperty] private OperationLogEntry? selectedOperationLog;
     [ObservableProperty] private DiffHunk? selectedHunk;
     [ObservableProperty] private ConflictFile? selectedConflict;
     [ObservableProperty] private string conflictBaseText = string.Empty;
@@ -88,6 +96,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         foreach (var repository in settings.RecentRepositories.Where(Directory.Exists))
         {
             RecentRepositories.Add(repository);
+            repositoryInsertionOrder[repository] = nextRepositoryOrder++;
         }
 
         if (settings.LastRepository is { } last &&
@@ -100,6 +109,49 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public Task<bool> IsRepositoryAsync(string path) =>
         git.IsRepositoryAsync(path);
+
+    public async Task SortRepositoriesAsync(string mode)
+    {
+        if (!RepositorySortModes.Contains(mode, StringComparer.Ordinal))
+        {
+            return;
+        }
+
+        RepositorySortMode = mode;
+        var version = ++repositorySortVersion;
+        var paths = RecentRepositories.ToArray();
+        var metadata = await Task.Run(() => paths.ToDictionary(
+            path => path,
+            path => ReadRepositoryMetadata(path, mode == "文件大小"),
+            StringComparer.OrdinalIgnoreCase));
+        if (version != repositorySortVersion)
+        {
+            return;
+        }
+
+        IOrderedEnumerable<string> ordered = mode switch
+        {
+            "创建时间" => paths.OrderByDescending(path => metadata[path].CreationTimeUtc),
+            "修改时间" => paths.OrderByDescending(path => metadata[path].LastWriteTimeUtc),
+            "文件大小" => paths.OrderByDescending(path => metadata[path].Size),
+            _ => paths.OrderBy(path => repositoryInsertionOrder.GetValueOrDefault(path, int.MaxValue))
+        };
+        var sorted = ordered
+            .ThenBy(path => repositoryInsertionOrder.GetValueOrDefault(path, int.MaxValue))
+            .ToArray();
+        for (var targetIndex = 0; targetIndex < sorted.Length; targetIndex++)
+        {
+            var currentIndex = RecentRepositories.IndexOf(sorted[targetIndex]);
+            if (currentIndex >= 0 && currentIndex != targetIndex)
+            {
+                RecentRepositories.Move(currentIndex, targetIndex);
+            }
+        }
+
+        SelectedRepository = RecentRepositories.FirstOrDefault(
+            path => path.Equals(ActiveRepositoryPath, StringComparison.OrdinalIgnoreCase));
+        StatusText = $"仓库已按{mode}排序。";
+    }
 
     public async Task<bool> OpenRepositoryAsync(string path)
     {
@@ -670,6 +722,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Replace(Notices, snapshot.Features.Notices);
         BuildFileTree(snapshot.WorkingDirectory);
         Replace(OperationLog, await logStore.GetRecentAsync(snapshot.RepositoryPath, 100, cancellationToken));
+        SelectedOperationLog = OperationLog.FirstOrDefault();
         Replace(Conflicts, await git.GetConflictsAsync(snapshot.RepositoryPath, cancellationToken));
         StatusText = $"{snapshot.Changes.Count} 个变化 · {snapshot.Branches.Count} 个分支 · " +
                      $"刷新于 {snapshot.RefreshedAt:HH:mm:ss}";
@@ -712,19 +765,39 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private async Task RememberRepositoryAsync(string path)
     {
-        RecentRepositories.Remove(path);
-        RecentRepositories.Insert(0, path);
+        var existing = RecentRepositories.FirstOrDefault(
+            item => item.Equals(path, StringComparison.OrdinalIgnoreCase));
+        if (existing is null)
+        {
+            RecentRepositories.Add(path);
+            repositoryInsertionOrder[path] = nextRepositoryOrder++;
+            existing = path;
+        }
         while (RecentRepositories.Count > 20)
         {
-            RecentRepositories.RemoveAt(RecentRepositories.Count - 1);
+            var oldest = RecentRepositories
+                .Where(item => !item.Equals(existing, StringComparison.OrdinalIgnoreCase))
+                .MinBy(item => repositoryInsertionOrder.GetValueOrDefault(item, int.MaxValue));
+            if (oldest is null)
+            {
+                break;
+            }
+            RecentRepositories.Remove(oldest);
+            repositoryInsertionOrder.Remove(oldest);
         }
         settings = settings with
         {
-            RecentRepositories = RecentRepositories.ToArray(),
+            RecentRepositories = RecentRepositories
+                .OrderBy(item => repositoryInsertionOrder.GetValueOrDefault(item, int.MaxValue))
+                .ToArray(),
             LastRepository = path
         };
         await settingsStore.SaveAsync(settings);
-        SelectedRepository = path;
+        if (RepositorySortMode != "添加顺序")
+        {
+            await SortRepositoriesAsync(RepositorySortMode);
+        }
+        SelectedRepository = existing;
     }
 
     private void ResetRepositoryView(string path)
@@ -753,6 +826,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Conflicts.Clear();
         Notices.Clear();
         SelectedCommit = null;
+        SelectedOperationLog = null;
         SelectedChange = null;
         SelectedHunk = null;
         SelectedConflict = null;
@@ -764,6 +838,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         ConflictOursText = string.Empty;
         ConflictTheirsText = string.Empty;
         ConflictResultText = string.Empty;
+        EquivalentCommand = string.Empty;
     }
 
     private async Task RunBusyAsync(Func<CancellationToken, Task> action)
@@ -795,6 +870,65 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         EquivalentCommand = result.EquivalentCommand;
     }
 
+    partial void OnSelectedOperationLogChanged(OperationLogEntry? value)
+    {
+        if (value is not null)
+        {
+            EquivalentCommand = value.EquivalentCommand;
+        }
+    }
+
+    private static RepositoryMetadata ReadRepositoryMetadata(string path, bool includeSize)
+    {
+        try
+        {
+            var directory = new DirectoryInfo(path);
+            return new RepositoryMetadata(
+                directory.CreationTimeUtc,
+                directory.LastWriteTimeUtc,
+                includeSize ? CalculateDirectorySize(path) : 0);
+        }
+        catch (IOException)
+        {
+            return RepositoryMetadata.Empty;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return RepositoryMetadata.Empty;
+        }
+    }
+
+    private static long CalculateDirectorySize(string path)
+    {
+        long size = 0;
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.ReparsePoint
+        };
+        foreach (var file in Directory.EnumerateFiles(path, "*", options))
+        {
+            try
+            {
+                size = checked(size + new FileInfo(file).Length);
+            }
+            catch (IOException)
+            {
+                // A file may disappear while metadata is collected.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Ignore files that cannot be inspected.
+            }
+            catch (OverflowException)
+            {
+                return long.MaxValue;
+            }
+        }
+        return size;
+    }
+
     private static void Replace<T>(ObservableCollection<T> target, IEnumerable<T> source)
     {
         target.Clear();
@@ -810,6 +944,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         autoSaveTimer?.Dispose();
         refreshCancellation.Cancel();
         refreshCancellation.Dispose();
+    }
+
+    private sealed record RepositoryMetadata(
+        DateTime CreationTimeUtc,
+        DateTime LastWriteTimeUtc,
+        long Size)
+    {
+        public static RepositoryMetadata Empty { get; } = new(DateTime.MinValue, DateTime.MinValue, 0);
     }
 }
 

@@ -24,6 +24,7 @@ public sealed class RepositorySwitchingTests
         var git = new LibGitRepositoryService(recovery, log);
         await CreateRepositoryAsync(git, firstPath, "第一个仓库提交");
         await CreateRepositoryAsync(git, secondPath, "第二个仓库提交");
+        await File.WriteAllBytesAsync(Path.Combine(firstPath, "large.bin"), new byte[1024 * 1024]);
 
         using var viewModel = new MainWindowViewModel(
             git,
@@ -45,6 +46,20 @@ public sealed class RepositorySwitchingTests
         Assert.Equal(Path.GetFullPath(secondPath), viewModel.SelectedRepository);
         Assert.Equal("第二个仓库提交", Assert.Single(viewModel.History).Message);
         Assert.DoesNotContain(viewModel.History, commit => commit.Message == "第一个仓库提交");
+
+        var originalOrder = viewModel.RecentRepositories.ToArray();
+        Assert.True(await viewModel.OpenRepositoryAsync(firstPath));
+        Assert.Equal(originalOrder, viewModel.RecentRepositories);
+        Assert.Equal(Path.GetFullPath(firstPath), viewModel.SelectedRepository);
+
+        await viewModel.SortRepositoriesAsync("文件大小");
+        Assert.Equal(Path.GetFullPath(firstPath), viewModel.RecentRepositories[0]);
+        Assert.Equal(Path.GetFullPath(firstPath), viewModel.SelectedRepository);
+
+        var initLog = Assert.Single(
+            viewModel.OperationLog, entry => entry.Operation == "init");
+        viewModel.SelectedOperationLog = initLog;
+        Assert.Equal("git init", viewModel.EquivalentCommand);
     }
 
     private static async Task CreateRepositoryAsync(
