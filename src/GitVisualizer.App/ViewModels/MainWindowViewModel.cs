@@ -63,11 +63,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public ObservableCollection<ConflictFile> Conflicts { get; } = [];
     public ObservableCollection<string> Notices { get; } = [];
     public IReadOnlyList<string> RepositorySortModes { get; } =
-        ["添加顺序", "创建时间", "修改时间", "文件大小"];
+        ["创建时间", "修改时间", "文件大小"];
 
     [ObservableProperty] private string activeRepositoryPath = string.Empty;
     [ObservableProperty] private string? selectedRepository;
-    [ObservableProperty] private string repositorySortMode = "添加顺序";
+    [ObservableProperty] private string repositorySortMode = "修改时间";
     [ObservableProperty] private string currentBranch = "未打开仓库";
     [ObservableProperty] private string statusText = "拖入文件夹，或点击“打开仓库”开始";
     [ObservableProperty] private string commitMessage = string.Empty;
@@ -98,6 +98,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             RecentRepositories.Add(repository);
             repositoryInsertionOrder[repository] = nextRepositoryOrder++;
         }
+        await SortRepositoriesAsync(RepositorySortMode);
 
         if (settings.LastRepository is { } last &&
             Directory.Exists(last) &&
@@ -793,10 +794,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             LastRepository = path
         };
         await settingsStore.SaveAsync(settings);
-        if (RepositorySortMode != "添加顺序")
-        {
-            await SortRepositoriesAsync(RepositorySortMode);
-        }
+        await SortRepositoriesAsync(RepositorySortMode);
         SelectedRepository = existing;
     }
 

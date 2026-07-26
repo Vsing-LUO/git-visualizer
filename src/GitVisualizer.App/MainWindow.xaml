@@ -141,7 +141,32 @@
                             </ContextMenu>
                         </ListBox.ContextMenu>
                     </ListBox>
-                    <TextBlock Grid.Row="4" Style="{StaticResource SectionTitle}" Text="{DynamicResource Section.Files}"/>
+                    <DockPanel Grid.Row="4">
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="{DynamicResource Section.Files}"/>
+                        <Button x:Name="NewItemButton" DockPanel.Dock="Right"
+                                Content="＋ 新建文件" Height="27" MinHeight="27"
+                                Padding="8,2" Margin="0,6,8,4"
+                                Click="NewItemMenu_OnClick"
+                                ToolTip="在当前选中的目录中新建文件或文件夹">
+                            <Button.ContextMenu>
+                                <ContextMenu Placement="Bottom">
+                                    <MenuItem Header="📁  文件夹" Tag="folder"
+                                              Click="NewItemType_OnClick"/>
+                                    <Separator/>
+                                    <MenuItem Header="📄  文本文档 (.txt)" Tag=".txt"
+                                              Click="NewItemType_OnClick"/>
+                                    <MenuItem Header="Ⓜ  Markdown 文档 (.md)" Tag=".md"
+                                              Click="NewItemType_OnClick"/>
+                                    <MenuItem Header="C#  C# 源文件 (.cs)" Tag=".cs"
+                                              Click="NewItemType_OnClick"/>
+                                    <MenuItem Header="◆  JSON 文件 (.json)" Tag=".json"
+                                              Click="NewItemType_OnClick"/>
+                                    <MenuItem Header="&lt;/&gt;  XML 文件 (.xml)" Tag=".xml"
+                                              Click="NewItemType_OnClick"/>
+                                </ContextMenu>
+                            </Button.ContextMenu>
+                        </Button>
+                    </DockPanel>
                     <TreeView x:Name="FileTreeView" Grid.Row="5" ItemsSource="{Binding FileTree}"
                               ItemTemplate="{StaticResource FileTreeTemplate}"
                               SelectedItemChanged="FileTree_OnSelectedItemChanged">

@@ -37,6 +37,11 @@ public sealed class RepositorySwitchingTests
             recovery,
             new MemoryCredentialVault());
 
+        Assert.Equal(
+            ["创建时间", "修改时间", "文件大小"],
+            viewModel.RepositorySortModes);
+        Assert.DoesNotContain("添加顺序", viewModel.RepositorySortModes);
+
         Assert.True(await viewModel.OpenRepositoryAsync(firstPath));
         Assert.Equal("第一个仓库提交", Assert.Single(viewModel.History).Message);
 

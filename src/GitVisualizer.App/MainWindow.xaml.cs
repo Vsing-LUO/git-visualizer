@@ -396,12 +396,43 @@ public partial class MainWindow : Window
     }
 
     private async void NewFile_OnClick(object sender, RoutedEventArgs e) =>
-        await CreateFileSystemItemAsync(false);
+        await CreateFileSystemItemAsync(false, "新建 文本文档.txt");
 
     private async void NewFolder_OnClick(object sender, RoutedEventArgs e) =>
-        await CreateFileSystemItemAsync(true);
+        await CreateFileSystemItemAsync(true, "新建文件夹");
 
-    private async Task CreateFileSystemItemAsync(bool directory)
+    private void NewItemMenu_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!viewModel.HasRepository || sender is not Button button || button.ContextMenu is null)
+        {
+            return;
+        }
+        button.ContextMenu.PlacementTarget = button;
+        button.ContextMenu.IsOpen = true;
+    }
+
+    private async void NewItemType_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: string type })
+        {
+            return;
+        }
+        var (directory, suggestedName) = type switch
+        {
+            "folder" => (true, "新建文件夹"),
+            ".md" => (false, "README.md"),
+            ".cs" => (false, "新建类.cs"),
+            ".json" => (false, "data.json"),
+            ".xml" => (false, "data.xml"),
+            _ => (false, "新建 文本文档.txt")
+        };
+        await CreateFileSystemItemAsync(directory, suggestedName, type == "folder" ? null : type);
+    }
+
+    private async Task CreateFileSystemItemAsync(
+        bool directory,
+        string suggestedName,
+        string? requiredExtension = null)
     {
         if (!viewModel.HasRepository)
         {
@@ -412,10 +443,44 @@ public partial class MainWindow : Window
             : selectedTreeItem.IsDirectory
                 ? selectedTreeItem.FullPath
                 : Path.GetDirectoryName(selectedTreeItem.FullPath) ?? viewModel.ActiveRepositoryPath;
-        var name = Prompt(directory ? "新建文件夹" : "新建文件", "名称：");
-        if (name is not null)
+        var name = Prompt(
+            directory ? "新建文件夹" : "新建文件",
+            $"创建位置：\n{parent}\n\n名称：",
+            suggestedName);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+        name = name.Trim();
+        if (name is "." or ".." ||
+            !Path.GetFileName(name).Equals(name, StringComparison.Ordinal) ||
+            name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            MessageBox.Show(
+                this,
+                "请输入不包含路径分隔符的有效名称。",
+                "名称无效",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+        if (requiredExtension is not null &&
+            string.IsNullOrEmpty(Path.GetExtension(name)))
+        {
+            name += requiredExtension;
+        }
+        try
         {
             await viewModel.CreateFileAsync(parent, name, directory);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                directory ? "无法创建文件夹" : "无法创建文件",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
         }
     }
 
