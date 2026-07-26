@@ -101,7 +101,8 @@
                     </Grid.RowDefinitions>
                     <TextBlock Style="{StaticResource SectionTitle}" Text="{DynamicResource Section.Repositories}"/>
                     <ListBox Grid.Row="1" ItemsSource="{Binding RecentRepositories}"
-                             MouseDoubleClick="RecentRepositories_OnMouseDoubleClick">
+                             SelectedItem="{Binding SelectedRepository, Mode=TwoWay}"
+                             SelectionChanged="RecentRepositories_OnSelectionChanged">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <StackPanel>

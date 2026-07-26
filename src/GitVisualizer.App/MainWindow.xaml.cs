@@ -62,14 +62,13 @@ public partial class MainWindow : Window
         await viewModel.CloneRepositoryAsync(urlDialog.Value, destination, null);
     }
 
-    private async Task TryOpenOrInitializeAsync(string path)
+    private async Task<bool> TryOpenOrInitializeAsync(string path)
     {
         try
         {
             if (await viewModel.IsRepositoryAsync(path))
             {
-                await viewModel.OpenRepositoryAsync(path);
-                return;
+                return await viewModel.OpenRepositoryAsync(path);
             }
 
             var answer = MessageBox.Show(
@@ -80,7 +79,7 @@ public partial class MainWindow : Window
                 MessageBoxImage.Question);
             if (answer != MessageBoxResult.Yes)
             {
-                return;
+                return false;
             }
 
             var identity = new GitIdentity(
@@ -96,6 +95,7 @@ public partial class MainWindow : Window
                     MessageBoxButton.OK,
                     MessageBoxImage.Error);
             }
+            return result.Success;
         }
         catch (Exception exception)
         {
@@ -105,14 +105,30 @@ public partial class MainWindow : Window
                 "打开仓库失败",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
+            return false;
         }
     }
 
-    private async void RecentRepositories_OnMouseDoubleClick(object sender, MouseButtonEventArgs e)
+    private async void RecentRepositories_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (((ListBox)sender).SelectedItem is string path)
+        if (((ListBox)sender).SelectedItem is not string path ||
+            PathsEqual(path, viewModel.ActiveRepositoryPath))
         {
-            await TryOpenOrInitializeAsync(path);
+            return;
+        }
+        if (viewModel.IsBusy)
+        {
+            viewModel.SelectedRepository = viewModel.HasRepository
+                ? viewModel.ActiveRepositoryPath
+                : null;
+            return;
+        }
+
+        if (!await TryOpenOrInitializeAsync(path))
+        {
+            viewModel.SelectedRepository = viewModel.HasRepository
+                ? viewModel.ActiveRepositoryPath
+                : null;
         }
     }
 
@@ -496,5 +512,15 @@ public partial class MainWindow : Window
         var index = Math.Max(value.LastIndexOf('/'), value.LastIndexOf(':'));
         var name = index >= 0 ? value[(index + 1)..] : value;
         return name.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+        {
+            return false;
+        }
+        return Path.GetFullPath(left)
+            .Equals(Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -48,3 +48,37 @@ internal sealed class MemoryOperationLogStore : IOperationLogStore
             .Reverse()
             .ToArray());
 }
+
+internal sealed class MemorySettingsStore : ISettingsStore
+{
+    public AppSettings Settings { get; private set; } = AppSettings.Default;
+
+    public Task<AppSettings> LoadAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(Settings);
+
+    public Task SaveAsync(AppSettings settings, CancellationToken cancellationToken = default)
+    {
+        Settings = settings;
+        return Task.CompletedTask;
+    }
+}
+
+internal sealed class MemoryCredentialVault : ICredentialVault
+{
+    private readonly Dictionary<string, string> values = new(StringComparer.Ordinal);
+
+    public Task SaveAsync(string key, string secret, CancellationToken cancellationToken = default)
+    {
+        values[key] = secret;
+        return Task.CompletedTask;
+    }
+
+    public Task<string?> GetAsync(string key, CancellationToken cancellationToken = default) =>
+        Task.FromResult(values.GetValueOrDefault(key));
+
+    public Task DeleteAsync(string key, CancellationToken cancellationToken = default)
+    {
+        values.Remove(key);
+        return Task.CompletedTask;
+    }
+}

@@ -60,6 +60,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public ObservableCollection<string> Notices { get; } = [];
 
     [ObservableProperty] private string activeRepositoryPath = string.Empty;
+    [ObservableProperty] private string? selectedRepository;
     [ObservableProperty] private string currentBranch = "未打开仓库";
     [ObservableProperty] private string statusText = "拖入文件夹，或点击“打开仓库”开始";
     [ObservableProperty] private string commitMessage = string.Empty;
@@ -100,17 +101,30 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public Task<bool> IsRepositoryAsync(string path) =>
         git.IsRepositoryAsync(path);
 
-    public async Task OpenRepositoryAsync(string path)
+    public async Task<bool> OpenRepositoryAsync(string path)
     {
+        var opened = false;
+        var normalizedPath = Path.GetFullPath(path);
+        if (HasRepository &&
+            normalizedPath.Equals(ActiveRepositoryPath, StringComparison.OrdinalIgnoreCase))
+        {
+            await RefreshAsync();
+            SelectedRepository = ActiveRepositoryPath;
+            return true;
+        }
+
         await RunBusyAsync(async token =>
         {
-            var snapshot = await git.GetSnapshotAsync(path, token);
+            ResetRepositoryView(normalizedPath);
+            var snapshot = await git.GetSnapshotAsync(normalizedPath, token);
             ActiveRepositoryPath = snapshot.RepositoryPath;
             HasRepository = true;
             await RememberRepositoryAsync(snapshot.RepositoryPath);
             AttachWatcher(snapshot.RepositoryPath);
             await ApplySnapshotAsync(snapshot, token);
+            opened = true;
         });
+        return opened;
     }
 
     public async Task<GitOperationResult> InitializeRepositoryAsync(string path, GitIdentity identity)
@@ -710,6 +724,46 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             LastRepository = path
         };
         await settingsStore.SaveAsync(settings);
+        SelectedRepository = path;
+    }
+
+    private void ResetRepositoryView(string path)
+    {
+        watcher?.Dispose();
+        watcher = null;
+        refreshCancellation.Cancel();
+        refreshCancellation.Dispose();
+        refreshCancellation = new CancellationTokenSource();
+
+        ActiveRepositoryPath = path;
+        SelectedRepository = path;
+        HasRepository = false;
+        CurrentBranch = "正在打开仓库…";
+        StatusText = $"正在加载 {path}";
+        historyLoaded = 0;
+
+        History.Clear();
+        Branches.Clear();
+        Tags.Clear();
+        Remotes.Clear();
+        UnstagedChanges.Clear();
+        StagedChanges.Clear();
+        FileTree.Clear();
+        OperationLog.Clear();
+        Conflicts.Clear();
+        Notices.Clear();
+        SelectedCommit = null;
+        SelectedChange = null;
+        SelectedHunk = null;
+        SelectedConflict = null;
+        CurrentDocument = null;
+        DiffText = string.Empty;
+        EditorText = string.Empty;
+        DetailsText = string.Empty;
+        ConflictBaseText = string.Empty;
+        ConflictOursText = string.Empty;
+        ConflictTheirsText = string.Empty;
+        ConflictResultText = string.Empty;
     }
 
     private async Task RunBusyAsync(Func<CancellationToken, Task> action)
