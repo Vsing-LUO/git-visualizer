@@ -37,13 +37,30 @@
 
     <Grid>
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="48"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="250"/>
             <RowDefinition Height="28"/>
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="0,0,0,1">
+        <Menu Grid.Row="0" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="0,0,0,1">
+            <MenuItem Header="仓库">
+                <MenuItem Header="配置远程仓库…" Click="ConfigureRemote_OnClick" IsEnabled="{Binding HasRepository}"/>
+                <Separator/>
+                <MenuItem Header="标签管理…" Click="TagManagement_OnClick" IsEnabled="{Binding HasRepository}"/>
+                <MenuItem Header="临时现场（stash）…" Click="StashManagement_OnClick" IsEnabled="{Binding HasRepository}"/>
+            </MenuItem>
+            <MenuItem Header="分支">
+                <MenuItem Header="变基当前分支…" Click="Rebase_OnClick" IsEnabled="{Binding HasRepository}"/>
+            </MenuItem>
+            <MenuItem Header="远程">
+                <MenuItem Header="拉取所选远程…" Click="Pull_OnClick" IsEnabled="{Binding HasRepository}"/>
+                <MenuItem Header="使用 force-with-lease 推送…" Click="ForcePush_OnClick" IsEnabled="{Binding HasRepository}"/>
+            </MenuItem>
+        </Menu>
+
+        <Border Grid.Row="1" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="0,0,0,1">
             <DockPanel Margin="6,2">
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
                     <Button Style="{StaticResource ToolbarButton}" Content="{DynamicResource Action.Open}"
@@ -67,9 +84,9 @@
                               Padding="7,2"
                               VerticalContentAlignment="Center"
                               ItemsSource="{Binding Remotes}"
-                              SelectedItem="{Binding SelectedPushRemote, Mode=TwoWay}"
+                              SelectedItem="{Binding SelectedRemote, Mode=TwoWay}"
                               DisplayMemberPath="Name"
-                              ToolTip="选择推送目标远程仓库"/>
+                            ToolTip="选择获取、拉取和推送使用的远程仓库"/>
                     <Button Style="{StaticResource ToolbarButton}" Content="{DynamicResource Action.Push}"
                             Click="Push_OnClick"
                             ToolTip="推送到左侧选中的远程仓库，并打开推送监视窗口"/>
@@ -89,7 +106,7 @@
             </DockPanel>
         </Border>
 
-        <Grid Grid.Row="1">
+        <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="255" MinWidth="190" MaxWidth="420"/>
                 <ColumnDefinition Width="5"/>
@@ -482,10 +499,21 @@
                                         CornerRadius="4">
                                     <DockPanel>
                                         <TextBlock DockPanel.Dock="Right"
-                                                   Text="选择版本后仍可在下方手工编辑"
                                                    FontSize="10"
                                                    Opacity="0.5"
-                                                   VerticalAlignment="Center"/>
+                                                   VerticalAlignment="Center">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Text" Value="选择版本后仍可在下方手工编辑"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding SelectedConflict.IsBinary}" Value="True">
+                                                            <Setter Property="Text" Value="二进制文件：文本解决已安全锁定"/>
+                                                            <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
                                         <TextBlock Text="{Binding SelectedConflict.Path, TargetNullValue=未选择文件}"
                                                    FontWeight="SemiBold"
                                                    TextTrimming="CharacterEllipsis"
@@ -638,20 +666,24 @@
                                             <Button Content="采用当前"
                                                     Padding="5,3"
                                                     MinHeight="28"
+                                                    IsEnabled="{Binding CanEditSelectedConflict}"
                                                     Click="UseOurs_OnClick"/>
                                             <Button Grid.Column="1"
                                                     Content="采用对方"
                                                     Padding="5,3"
                                                     MinHeight="28"
+                                                    IsEnabled="{Binding CanEditSelectedConflict}"
                                                     Click="UseTheirs_OnClick"/>
                                             <Button Grid.Column="2"
                                                     Content="合并两者"
                                                     Padding="5,3"
                                                     MinHeight="28"
+                                                    IsEnabled="{Binding CanEditSelectedConflict}"
                                                     Click="UseBoth_OnClick"/>
                                         </Grid>
                                         <TextBox Grid.Row="2"
                                                  Text="{Binding ConflictResultText, UpdateSourceTrigger=PropertyChanged}"
+                                                 IsReadOnly="{Binding SelectedConflict.IsBinary}"
                                                  AcceptsReturn="True"
                                                  AcceptsTab="True"
                                                  FontFamily="Consolas"
@@ -729,7 +761,7 @@
                                             Background="{StaticResource AccentBrush}"
                                             Foreground="White"
                                             BorderThickness="0"
-                                            IsEnabled="{Binding HasSelectedConflict}"
+                                            IsEnabled="{Binding CanEditSelectedConflict}"
                                             Click="ResolveConflict_OnClick"/>
                                 </Grid>
                                 <Grid Grid.Row="1" Margin="0,7,0,0">
@@ -788,7 +820,7 @@
             </TabControl>
         </Grid>
 
-        <Border Grid.Row="2" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="0,1,0,0">
+        <Border Grid.Row="3" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="0,1,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
@@ -848,7 +880,7 @@
             </Grid>
         </Border>
 
-        <StatusBar Grid.Row="3">
+        <StatusBar Grid.Row="4">
             <StatusBarItem>
                 <TextBlock Text="{Binding StatusText}"/>
             </StatusBarItem>
@@ -865,7 +897,7 @@
         </StatusBar>
 
         <Grid x:Name="CloneOverlay"
-              Grid.RowSpan="4"
+              Grid.RowSpan="5"
               Panel.ZIndex="1000"
               Background="#66000000"
               Visibility="{Binding IsCloning, Converter={StaticResource BoolToVisibility}}">
@@ -935,7 +967,7 @@
         </Grid>
 
         <Grid x:Name="PullOverlay"
-              Grid.RowSpan="4"
+              Grid.RowSpan="5"
               Panel.ZIndex="1000"
               Background="#66000000"
               Visibility="{Binding IsPulling, Converter={StaticResource BoolToVisibility}}">

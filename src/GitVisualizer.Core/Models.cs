@@ -143,6 +143,13 @@ public sealed record BranchDeletionCheck(
 
 public sealed record TagInfo(string Name, string TargetId);
 
+public sealed record StashInfo(
+    int Index,
+    string Message,
+    string WorkTreeId,
+    string BaseId,
+    DateTimeOffset CreatedAt);
+
 public sealed record RemoteInfo(
     string Name,
     string FetchUrl,

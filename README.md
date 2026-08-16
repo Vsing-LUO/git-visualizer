@@ -47,11 +47,31 @@ artifacts\publish\win-x64\GitVisualizer.exe
 - 冲突查看与安全恢复点
 - 内置轻量文本编辑器和常用文件操作
 
+## v1.1.0 安全工作流
+
+- 顶部菜单接通标签创建/删除、stash 保存/应用/弹出/删除和 rebase
+- fetch、pull、push 明确使用界面中选择的远程；pull 还会明确选择远程分支
+- `force-with-lease` 在服务器上传前原子校验本地已知远程提交，不会隐式 fetch，并要求输入当前分支名确认
+- stash 弹出/删除与强制推送前创建隐藏安全引用，危险操作仍保留自动恢复点
+- 二进制冲突禁止进入文本写回路径，避免把二进制内容损坏为文本
+
+修改前的可用版本保存在 Git 标签 `v1.0.0-baseline`，本机自包含程序位于：
+
+```text
+artifacts\releases\v1.0.0-baseline\GitVisualizer.exe
+```
+
+v1.1.0 自包含程序位于：
+
+```text
+artifacts\releases\v1.1.0\GitVisualizer.exe
+```
+
 ## 项目结构
 
 - `GitVisualizer.App`：WPF 中文界面、MVVM、提交图、编辑器和对话框
 - `GitVisualizer.Core`：领域模型及 Git、差异、恢复、凭据等核心接口
-- `GitVisualizer.Infrastructure`：LibGit2Sharp、原生 `git_apply`、SQLite、文件系统、恢复点和 Windows Credential Manager
+- `GitVisualizer.Infrastructure`：LibGit2Sharp、SQLite、文件系统、恢复点和 Windows Credential Manager
 - `GitVisualizer.Tests`：临时仓库集成测试与文件安全测试
 
 ## 本地数据与远程认证

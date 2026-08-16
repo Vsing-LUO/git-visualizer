@@ -159,7 +159,7 @@ public partial class MainWindow : Window
 
     private async void Push_OnClick(object sender, RoutedEventArgs e)
     {
-        var remote = viewModel.SelectedPushRemote;
+        var remote = viewModel.SelectedRemote;
         if (remote is null)
         {
             MessageBox.Show(
@@ -171,6 +171,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        await RunPushAsync(remote, forceWithLease: false);
+    }
+
+    private async Task RunPushAsync(RemoteInfo remote, bool forceWithLease)
+    {
         var branchName = viewModel.Head?.BranchName ?? "当前 HEAD";
         var monitor = new PushMonitorWindow(
             remote.Name,
@@ -182,7 +187,7 @@ public partial class MainWindow : Window
         monitor.Show();
 
         var progress = new Progress<GitPushProgress>(monitor.Report);
-        var result = await viewModel.PushToRemoteAsync(remote, progress);
+        var result = await viewModel.PushToRemoteAsync(remote, progress, forceWithLease);
         monitor.Complete(result);
     }
 
@@ -648,7 +653,11 @@ public partial class MainWindow : Window
         {
             return;
         }
-        var dialog = new PullStrategyWindow(viewModel.SavedPullStrategy)
+        var dialog = new PullStrategyWindow(
+            viewModel.Remotes,
+            viewModel.Branches,
+            viewModel.SelectedRemote,
+            viewModel.SavedPullStrategy)
         {
             Owner = this
         };
@@ -656,9 +665,19 @@ public partial class MainWindow : Window
         {
             return;
         }
-        var remoteName = viewModel.Remotes.FirstOrDefault()?.Name ?? "上游远程仓库";
+        var remote = dialog.SelectedRemote;
+        if (remote is null || string.IsNullOrWhiteSpace(dialog.SelectedRemoteBranch))
+        {
+            MessageBox.Show(this, "请选择远程仓库和远程分支。", "拉取");
+            return;
+        }
+        viewModel.SelectedRemote = remote;
+        var remoteName = remote.Name;
         var branchName = viewModel.Head?.BranchName ?? viewModel.CurrentBranch;
-        var result = await viewModel.PullAsync(dialog.SelectedStrategy);
+        var result = await viewModel.PullAsync(
+            remote,
+            dialog.SelectedRemoteBranch,
+            dialog.SelectedStrategy);
         if (result.Success && !viewModel.HasConflicts)
         {
             MessageBox.Show(
@@ -689,6 +708,94 @@ public partial class MainWindow : Window
         PullStrategy.FastForwardOnly => "仅在没有分歧时更新",
         _ => "保留双方修改并合并"
     };
+
+    private async void TagManagement_OnClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new TagManagementWindow(viewModel.Tags) { Owner = this };
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+        var result = dialog.Action == TagManagementAction.Create
+            ? await viewModel.CreateTagAsync(dialog.TagName, viewModel.SelectedCommit?.Id)
+            : await viewModel.DeleteTagAsync(dialog.TagName);
+        ShowOperationFailure(result, "标签操作失败");
+    }
+
+    private async void StashManagement_OnClick(object sender, RoutedEventArgs e)
+    {
+        IReadOnlyList<StashInfo> stashes;
+        try
+        {
+            stashes = await viewModel.GetStashesAsync();
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, exception.Message, "无法读取临时现场", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+        var dialog = new StashManagementWindow(stashes) { Owner = this };
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+        var result = dialog.Action switch
+        {
+            StashManagementAction.Save => await viewModel.SaveStashAsync(dialog.StashMessage),
+            StashManagementAction.Apply => await viewModel.ApplyStashAsync(dialog.SelectedIndex, false),
+            StashManagementAction.Pop => await viewModel.ApplyStashAsync(dialog.SelectedIndex, true),
+            StashManagementAction.Delete => await viewModel.DeleteStashAsync(dialog.SelectedIndex),
+            _ => null
+        };
+        if (result is not null)
+        {
+            ShowOperationFailure(result, "临时现场操作失败");
+        }
+    }
+
+    private async void Rebase_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (viewModel.Head?.IsDetached == true)
+        {
+            MessageBox.Show(this, "请先切换到本地分支，再执行变基。", "变基");
+            return;
+        }
+        var branches = viewModel.Branches
+            .Where(branch => !branch.IsCurrent)
+            .Select(branch => branch.FriendlyName)
+            .ToArray();
+        var dialog = new RebaseWindow(branches) { Owner = this };
+        if (dialog.ShowDialog() == true)
+        {
+            var result = await viewModel.RebaseOntoAsync(dialog.UpstreamBranch, dialog.OntoBranch);
+            ShowOperationFailure(result, "变基失败");
+        }
+    }
+
+    private async void ForcePush_OnClick(object sender, RoutedEventArgs e)
+    {
+        var remote = viewModel.SelectedRemote;
+        var branchName = viewModel.Head?.BranchName;
+        if (remote is null || string.IsNullOrWhiteSpace(branchName))
+        {
+            MessageBox.Show(this, "请先选择远程仓库，并确保当前位于本地分支。", "Force-with-lease 推送");
+            return;
+        }
+        var dialog = new ForcePushConfirmationWindow(remote.Name, branchName) { Owner = this };
+        if (dialog.ShowDialog() == true)
+        {
+            await RunPushAsync(remote, forceWithLease: true);
+        }
+    }
+
+    private void ShowOperationFailure(GitOperationResult result, string title)
+    {
+        if (!result.Success)
+        {
+            MessageBox.Show(this, result.ErrorMessage ?? result.Summary, title,
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
 
     private async void Identity_OnClick(object sender, RoutedEventArgs e)
     {
@@ -727,7 +834,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, "当前仓库没有远程地址。", "远程凭据");
             return;
         }
-        var remote = viewModel.SelectedPushRemote ?? viewModel.Remotes[0];
+        var remote = viewModel.SelectedRemote ?? viewModel.Remotes[0];
         var url = remote.FetchUrl;
         if (url.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase) ||
             (url.Contains('@') && url.Contains(':')))

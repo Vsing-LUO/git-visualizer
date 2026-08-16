@@ -90,7 +90,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string currentBranch = "未打开仓库";
     [ObservableProperty] private HeadInfo? head;
     [ObservableProperty] private BranchInfo? selectedBranch;
-    [ObservableProperty] private RemoteInfo? selectedPushRemote;
+    [ObservableProperty] private RemoteInfo? selectedRemote;
     [ObservableProperty] private string selectedHistoryBranchName = string.Empty;
     [ObservableProperty] private string historyContextText = "全部分支";
     [ObservableProperty] private string statusText = "拖入文件夹，或点击“打开仓库”开始";
@@ -123,6 +123,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private RepositoryOperationState operationState;
     [ObservableProperty] private bool hasConflicts;
     [ObservableProperty] private bool hasSelectedConflict;
+    [ObservableProperty] private bool canEditSelectedConflict;
     [ObservableProperty] private bool canContinueOperation;
     [ObservableProperty] private bool canAbortOperation;
     [ObservableProperty] private string conflictStatusText = "当前没有进行中的冲突操作。";
@@ -536,7 +537,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task FetchAsync()
     {
-        var remote = Remotes.FirstOrDefault();
+        var remote = SelectedRemote;
         if (remote is null)
         {
             StatusText = "仓库尚未配置远程地址。";
@@ -548,10 +549,19 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         ShowResult(result);
     }
 
-    public async Task<GitOperationResult> PullAsync(PullStrategy strategy)
+    public Task<GitOperationResult> PullAsync(PullStrategy strategy)
     {
-        var remote = Remotes.FirstOrDefault();
-        if (!HasRepository || remote is null)
+        var remote = SelectedRemote;
+        var branchName = Head?.BranchName ?? string.Empty;
+        return PullAsync(remote, branchName, strategy);
+    }
+
+    public async Task<GitOperationResult> PullAsync(
+        RemoteInfo? remote,
+        string remoteBranchName,
+        PullStrategy strategy)
+    {
+        if (!HasRepository || remote is null || string.IsNullOrWhiteSpace(remoteBranchName))
         {
             const string message = "当前仓库尚未配置可拉取的远程地址。";
             StatusText = message;
@@ -582,6 +592,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 var credential = await GetRemoteCredentialAsync(remote);
                 result = await git.PullAsync(
                     ActiveRepositoryPath,
+                    remote.Name,
+                    remoteBranchName,
                     strategy,
                     credential);
             }
@@ -639,12 +651,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task PushAsync()
     {
-        await PushToRemoteAsync(SelectedPushRemote);
+        await PushToRemoteAsync(SelectedRemote);
     }
 
     public async Task<GitOperationResult> PushToRemoteAsync(
         RemoteInfo? remote,
-        IProgress<GitPushProgress>? progress = null)
+        IProgress<GitPushProgress>? progress = null,
+        bool forceWithLease = false)
     {
         if (remote is null)
         {
@@ -677,7 +690,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 result = await git.PushAsync(
                     ActiveRepositoryPath,
                     remote.Name,
-                    false,
+                    forceWithLease,
                     credential,
                     progress);
             }
@@ -685,7 +698,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             {
                 result = GitOperationResult.Fail(
                     "push",
-                    $"git push {remote.Name}",
+                    forceWithLease
+                        ? $"git push --force-with-lease {remote.Name}"
+                        : $"git push {remote.Name}",
                     exception);
             }
 
@@ -933,6 +948,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         SelectedConflict = conflict;
         HasSelectedConflict = conflict is not null;
+        CanEditSelectedConflict = conflict is { IsBinary: false };
         if (conflict is not null)
         {
             SelectedRightTabIndex = ConflictTabIndex;
@@ -945,6 +961,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public void UseConflictSide(ConflictSide side)
     {
+        if (SelectedConflict?.IsBinary == true)
+        {
+            StatusText = "二进制冲突已锁定文本编辑；请使用外部工具处理后再暂存。";
+            return;
+        }
         ConflictResultText = side switch
         {
             ConflictSide.Ours => ConflictOursText,
@@ -960,6 +981,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (SelectedConflict is null)
         {
             throw new InvalidOperationException("请先选择冲突文件。");
+        }
+        if (SelectedConflict.IsBinary)
+        {
+            var exception = new InvalidOperationException(
+                "二进制冲突不能通过文本编辑器解决；本版本已阻止可能破坏文件的写入。");
+            var blocked = GitOperationResult.Fail("conflict-resolve", "git add -- <path>", exception);
+            ShowResult(blocked);
+            return blocked;
         }
         var result = await git.ResolveConflictAsync(
             ActiveRepositoryPath, SelectedConflict.Path, ConflictResultText);
@@ -1107,7 +1136,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public async Task<RemoteCredential?> LoadSavedRemoteCredentialAsync(RemoteInfo? remote = null)
     {
-        remote ??= SelectedPushRemote ?? Remotes.FirstOrDefault();
+        remote ??= SelectedRemote ?? Remotes.FirstOrDefault();
         if (remote is null || IsSsh(remote.FetchUrl))
         {
             return null;
@@ -1202,6 +1231,78 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         settings.PullStrategies.TryGetValue(ActiveRepositoryPath, out var strategy)
             ? strategy
             : PullStrategy.Ask;
+
+    public IReadOnlyList<string> GetRemoteBranchNames(RemoteInfo remote)
+    {
+        var prefix = remote.Name + "/";
+        return Branches
+            .Where(branch => branch.IsRemote &&
+                             branch.FriendlyName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .Select(branch => branch.FriendlyName[prefix.Length..])
+            .Where(name => !name.Equals("HEAD", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public async Task<GitOperationResult> CreateTagAsync(string name, string? targetId = null)
+    {
+        var result = await git.CreateTagAsync(
+            ActiveRepositoryPath,
+            name.Trim(),
+            string.IsNullOrWhiteSpace(targetId) ? Head?.CommitId : targetId);
+        ShowResult(result);
+        await ReloadAllAsync();
+        return result;
+    }
+
+    public async Task<GitOperationResult> DeleteTagAsync(string name)
+    {
+        var result = await git.DeleteTagAsync(ActiveRepositoryPath, name);
+        ShowResult(result);
+        await ReloadAllAsync();
+        return result;
+    }
+
+    public Task<IReadOnlyList<StashInfo>> GetStashesAsync() =>
+        git.GetStashesAsync(ActiveRepositoryPath);
+
+    public async Task<GitOperationResult> SaveStashAsync(string message)
+    {
+        var result = await git.SaveStashAsync(ActiveRepositoryPath, message);
+        ShowResult(result);
+        await ReloadAllAsync();
+        return result;
+    }
+
+    public async Task<GitOperationResult> ApplyStashAsync(int index, bool pop)
+    {
+        var result = await git.ApplyStashAsync(ActiveRepositoryPath, index, pop);
+        ShowResult(result);
+        await ReloadAllAsync();
+        return result;
+    }
+
+    public async Task<GitOperationResult> DeleteStashAsync(int index)
+    {
+        var result = await git.DeleteStashAsync(ActiveRepositoryPath, index);
+        ShowResult(result);
+        await ReloadAllAsync();
+        return result;
+    }
+
+    public async Task<GitOperationResult> RebaseOntoAsync(
+        string upstreamBranch,
+        string? ontoBranch = null)
+    {
+        var result = await git.RebaseOntoAsync(
+            ActiveRepositoryPath,
+            upstreamBranch,
+            string.IsNullOrWhiteSpace(ontoBranch) ? null : ontoBranch);
+        ShowResult(result);
+        await ReloadAllAsync();
+        return result;
+    }
 
     public GitOperationPreview Preview(string operation, params string[] affected) =>
         git.Preview(operation, affected);
@@ -1301,7 +1402,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private async Task ApplySnapshotAsync(RepositorySnapshot snapshot, CancellationToken cancellationToken)
     {
-        var selectedRemoteName = SelectedPushRemote?.Name;
+        var selectedRemoteName = SelectedRemote?.Name;
         Head = snapshot.Head;
         CurrentBranch = snapshot.Head.IsDetached
             ? $"游离 HEAD · {snapshot.Head.CommitId[..Math.Min(8, snapshot.Head.CommitId.Length)]}"
@@ -1312,10 +1413,20 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             HistoryEvents,
             await git.GetHistoryEventsAsync(snapshot.RepositoryPath, cancellationToken));
         Replace(Remotes, snapshot.Remotes);
-        SelectedPushRemote = Remotes.FirstOrDefault(remote =>
+        var trackedRemoteName = snapshot.Branches
+            .FirstOrDefault(branch => branch.IsCurrent)
+            ?.TrackedBranch
+            ?.Split('/', 2)[0];
+        SelectedRemote = Remotes.FirstOrDefault(remote =>
                                  remote.Name.Equals(
                                      selectedRemoteName,
                                      StringComparison.OrdinalIgnoreCase))
+                             ?? Remotes.FirstOrDefault(remote =>
+                                 remote.Name.Equals(
+                                     trackedRemoteName,
+                                     StringComparison.OrdinalIgnoreCase))
+                             ?? Remotes.FirstOrDefault(remote =>
+                                 remote.Name.Equals("origin", StringComparison.OrdinalIgnoreCase))
                              ?? Remotes.FirstOrDefault();
         Replace(UnstagedChanges, snapshot.Changes.Where(change => !change.IsStaged));
         Replace(StagedChanges, snapshot.Changes.Where(change => change.IsStaged));
@@ -1478,7 +1589,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Tags.Clear();
         HistoryEvents.Clear();
         Remotes.Clear();
-        SelectedPushRemote = null;
+        SelectedRemote = null;
         UnstagedChanges.Clear();
         StagedChanges.Clear();
         FileTree.Clear();

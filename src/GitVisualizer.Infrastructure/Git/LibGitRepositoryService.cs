@@ -173,7 +173,7 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             }).OrderByDescending(x => x.IsCurrent).ThenBy(x => x.IsRemote).ThenBy(x => x.FriendlyName).ToArray();
 
             var tags = repository.Tags.Select(tag =>
-                    new TagInfo(tag.FriendlyName, tag.Target.Peel<GitObject>().Id.Sha))
+                    new TagInfo(tag.FriendlyName, tag.PeeledTarget.Id.Sha))
                 .OrderBy(x => x.Name)
                 .ToArray();
             var remotes = repository.Network.Remotes.Select(remote =>
@@ -856,6 +856,22 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             }, cancellationToken: cancellationToken);
     }
 
+    public Task<IReadOnlyList<StashInfo>> GetStashesAsync(
+        string repositoryPath, CancellationToken cancellationToken = default) =>
+        Task.Run<IReadOnlyList<StashInfo>>(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var repository = new Repository(repositoryPath);
+            return repository.Stashes
+                .Select((stash, index) => new StashInfo(
+                    index,
+                    NormalizeStashMessage(stash.Message),
+                    stash.WorkTree.Id.Sha,
+                    stash.Base.Id.Sha,
+                    stash.WorkTree.Committer.When))
+                .ToArray();
+        }, cancellationToken);
+
     public Task<GitOperationResult> ApplyStashAsync(
         string repositoryPath, int index, bool pop, CancellationToken cancellationToken = default)
     {
@@ -863,11 +879,12 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         return ExecuteWriteAsync(repositoryPath, pop ? "stash-pop" : "stash-apply", command,
             GitOperationRisk.Caution, true, null, repository =>
             {
+                var backupReference = PreserveStash(repository, index);
                 var status = pop ? repository.Stashes.Pop(index) : repository.Stashes.Apply(index);
                 return GitOperationResult.Ok(
                     pop ? "stash-pop" : "stash-apply",
                     status == StashApplyStatus.Conflicts ? "恢复现场时产生冲突" : "工作现场已恢复",
-                    command, [$"状态：{status}"]);
+                    command, [$"状态：{status}", $"安全引用：{backupReference}"]);
             }, cancellationToken: cancellationToken);
     }
 
@@ -878,8 +895,11 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         return ExecuteWriteAsync(repositoryPath, "stash-delete", command, GitOperationRisk.Dangerous, true, null,
             repository =>
             {
+                var backupReference = PreserveStash(repository, index);
                 repository.Stashes.Remove(index);
-                return GitOperationResult.Ok("stash-delete", "临时现场已删除", command);
+                return GitOperationResult.Ok(
+                    "stash-delete", "临时现场已删除", command,
+                    [$"安全引用：{backupReference}"]);
             }, cancellationToken: cancellationToken);
     }
 
@@ -979,6 +999,8 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
 
     public Task<GitOperationResult> PullAsync(
         string repositoryPath,
+        string remoteName,
+        string remoteBranchName,
         PullStrategy strategy,
         RemoteCredential? credential = null,
         GitIdentity? identity = null,
@@ -986,38 +1008,47 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
     {
         var command = strategy switch
         {
-            PullStrategy.Rebase => "git pull --rebase",
-            PullStrategy.FastForwardOnly => "git pull --ff-only",
-            _ => "git pull --no-rebase"
+            PullStrategy.Rebase => $"git pull --rebase {GitServiceSupport.Quote(remoteName)} {GitServiceSupport.Quote(remoteBranchName)}",
+            PullStrategy.FastForwardOnly => $"git pull --ff-only {GitServiceSupport.Quote(remoteName)} {GitServiceSupport.Quote(remoteBranchName)}",
+            _ => $"git pull --no-rebase {GitServiceSupport.Quote(remoteName)} {GitServiceSupport.Quote(remoteBranchName)}"
         };
         return ExecuteWriteAsync(repositoryPath, "pull", command, GitOperationRisk.Caution, true, null,
             repository =>
             {
                 EnsureClean(repository);
-                var signature = GitServiceSupport.ResolveSignature(repository, identity);
-                var options = new PullOptions
+                if (repository.Info.IsHeadDetached)
                 {
-                    FetchOptions = GitServiceSupport.FetchOptions(credential),
-                    MergeOptions = new MergeOptions
-                    {
-                        FastForwardStrategy = strategy == PullStrategy.FastForwardOnly
-                            ? FastForwardStrategy.FastForwardOnly
-                            : FastForwardStrategy.Default
-                    }
+                    throw new InvalidOperationException("分离头指针状态下不能拉取，请先切换到本地分支。");
+                }
+                var remote = repository.Network.Remotes[remoteName]
+                             ?? throw new ArgumentException("所选远程不存在。");
+                if (string.IsNullOrWhiteSpace(remoteBranchName))
+                {
+                    throw new ArgumentException("请选择远程分支。");
+                }
+                var signature = GitServiceSupport.ResolveSignature(repository, identity);
+                var fetchOptions = GitServiceSupport.FetchOptions(credential);
+                Commands.Fetch(repository, remote.Name,
+                    remote.FetchRefSpecs.Select(x => x.Specification),
+                    fetchOptions, "Git 可视化 pull");
+                var remoteBranch = repository.Branches[$"{remoteName}/{remoteBranchName}"]
+                                   ?? throw new InvalidOperationException(
+                                       $"获取后仍找不到远程分支 {remoteName}/{remoteBranchName}。");
+                var mergeOptions = new MergeOptions
+                {
+                    FastForwardStrategy = strategy == PullStrategy.FastForwardOnly
+                        ? FastForwardStrategy.FastForwardOnly
+                        : FastForwardStrategy.Default
                 };
                 if (strategy == PullStrategy.Rebase)
                 {
-                    var tracked = repository.Head.TrackedBranch
-                                  ?? throw new InvalidOperationException("当前分支没有上游分支。");
-                    Commands.Fetch(repository, tracked.RemoteName,
-                        repository.Network.Remotes[tracked.RemoteName].FetchRefSpecs.Select(x => x.Specification),
-                        options.FetchOptions, "Git 可视化 pull --rebase");
                     var committer = new Identity(signature.Name, signature.Email);
-                    var rebase = repository.Rebase.Start(repository.Head, tracked, tracked, committer, new RebaseOptions());
+                    var rebase = repository.Rebase.Start(
+                        repository.Head, remoteBranch, remoteBranch, committer, new RebaseOptions());
                     return GitOperationResult.Ok("pull", $"拉取变基状态：{rebase.Status}", command);
                 }
 
-                var result = Commands.Pull(repository, signature, options);
+                var result = repository.Merge(remoteBranch, signature, mergeOptions);
                 return GitOperationResult.Ok("pull",
                     result.Status == MergeStatus.Conflicts ? "拉取产生冲突" : "拉取完成",
                     command, [$"状态：{result.Status}"]);
@@ -1032,7 +1063,9 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         IProgress<GitPushProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        var command = forceWithLease ? "git push --force-with-lease" : $"git push {remoteName}";
+        var command = forceWithLease
+            ? $"git push --force-with-lease {GitServiceSupport.Quote(remoteName)}"
+            : $"git push {GitServiceSupport.Quote(remoteName)}";
         return ExecuteWriteAsync(repositoryPath, "push", command,
             forceWithLease ? GitOperationRisk.Dangerous : GitOperationRisk.Safe,
             forceWithLease, null, repository =>
@@ -1048,14 +1081,51 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                     GitPushProgressStage.Connecting,
                     Message: $"正在连接 {remote.Name}"));
                 var options = GitServiceSupport.PushOptions(credential);
+                var destinationRef = $"refs/heads/{branch.FriendlyName}";
+                ObjectId? expectedRemoteTip = null;
+                var leaseMismatch = false;
+                string? recoveryReference = null;
+                if (forceWithLease)
+                {
+                    var trackingReferenceName = $"refs/remotes/{remote.Name}/{branch.FriendlyName}";
+                    var trackingReference = repository.Refs[trackingReferenceName]?.ResolveToDirectReference();
+                    expectedRemoteTip = trackingReference is null
+                        ? null
+                        : repository.Lookup<Commit>(trackingReference.TargetIdentifier)?.Id;
+                    if (expectedRemoteTip is null)
+                    {
+                        throw new InvalidOperationException(
+                            $"本地没有 {remote.Name}/{branch.FriendlyName} 的已知远程状态。请先手动获取并检查，再重试。");
+                    }
+                    recoveryReference = CreateSafetyReference(
+                        repository,
+                        "remote-recovery",
+                        expectedRemoteTip,
+                        "Git Visualizer force-with-lease recovery");
+                }
                 options.OnNegotiationCompletedBeforePush = updates =>
                 {
-                    var updateCount = updates.Count();
+                    var negotiatedUpdates = updates.ToArray();
+                    var updateCount = negotiatedUpdates.Length;
                     progress?.Report(new GitPushProgress(
                         GitPushProgressStage.Negotiating,
                         updateCount,
                         updateCount,
                         Message: $"已协商 {updateCount} 个引用更新"));
+                    if (forceWithLease)
+                    {
+                        var branchUpdate = negotiatedUpdates.FirstOrDefault(update =>
+                            string.Equals(
+                                update.DestinationRefName,
+                                destinationRef,
+                                StringComparison.Ordinal));
+                        leaseMismatch = branchUpdate is null ||
+                                        branchUpdate.SourceObjectId != expectedRemoteTip;
+                        if (leaseMismatch)
+                        {
+                            return false;
+                        }
+                    }
                     return !cancellationToken.IsCancellationRequested;
                 };
                 options.OnPackBuilderProgress = (stage, current, total) =>
@@ -1078,27 +1148,29 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 };
                 if (forceWithLease)
                 {
-                    var tracked = branch.TrackedBranch;
-                    if (tracked is null)
+                    try
                     {
-                        throw new InvalidOperationException("强制推送要求当前分支已有上游分支。");
+                        repository.Network.Push(
+                            remote,
+                            $"+{branch.CanonicalName}:{destinationRef}",
+                            options);
                     }
-                    var expectedRemoteTip = tracked.Tip?.Id;
-                    Commands.Fetch(repository, remote.Name,
-                        remote.FetchRefSpecs.Select(x => x.Specification),
-                        GitServiceSupport.FetchOptions(credential), "force-with-lease preflight");
-                    if (expectedRemoteTip != branch.TrackedBranch?.Tip?.Id)
+                    catch when (leaseMismatch)
                     {
-                        throw new InvalidOperationException("远程分支在获取后发生变化，已取消强制推送。");
+                        throw new InvalidOperationException(
+                            "远程分支已不同于本地上次获取的状态；租约校验失败，未发送强制更新。请先手动获取并检查。");
                     }
-                    repository.Network.Push(remote,
-                        $"+{branch.CanonicalName}:refs/heads/{branch.FriendlyName}", options);
+                    if (leaseMismatch)
+                    {
+                        throw new InvalidOperationException(
+                            "远程分支已变化；租约校验失败，未发送强制更新。");
+                    }
                 }
                 else
                 {
                     repository.Network.Push(
                         remote,
-                        $"{branch.CanonicalName}:refs/heads/{branch.FriendlyName}",
+                        $"{branch.CanonicalName}:{destinationRef}",
                         options);
                 }
                 progress?.Report(new GitPushProgress(
@@ -1108,7 +1180,13 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                     branch,
                     updater => updater.Remote = remote.Name,
                     updater => updater.UpstreamBranch = $"refs/heads/{branch.FriendlyName}");
-                return GitOperationResult.Ok("push", "推送完成", command);
+                return GitOperationResult.Ok(
+                    "push",
+                    "推送完成",
+                    command,
+                    recoveryReference is null
+                        ? []
+                        : [$"远程旧状态安全引用：{recoveryReference}"]);
             }, cancellationToken: cancellationToken);
     }
 
@@ -1120,16 +1198,20 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             return repository.Index.Conflicts.Select(conflict =>
             {
                 var path = conflict.Ours?.Path ?? conflict.Theirs?.Path ?? conflict.Ancestor?.Path ?? string.Empty;
+                var fullPath = Path.Combine(repository.Info.WorkingDirectory, path);
+                var isBinary = IsBinary(ReadBlobBytes(repository, conflict.Ancestor)) ||
+                               IsBinary(ReadBlobBytes(repository, conflict.Ours)) ||
+                               IsBinary(ReadBlobBytes(repository, conflict.Theirs)) ||
+                               (File.Exists(fullPath) && IsBinary(fullPath));
                 return new ConflictFile(
                     path,
                     ReadBlob(repository, conflict.Ancestor),
                     ReadBlob(repository, conflict.Ours),
                     ReadBlob(repository, conflict.Theirs),
-                    File.Exists(Path.Combine(repository.Info.WorkingDirectory, path))
-                        ? File.ReadAllText(Path.Combine(repository.Info.WorkingDirectory, path))
+                    File.Exists(fullPath) && !isBinary
+                        ? File.ReadAllText(fullPath)
                         : string.Empty,
-                    IsBinary(ReadBlobBytes(repository, conflict.Ours)) ||
-                    IsBinary(ReadBlobBytes(repository, conflict.Theirs)),
+                    isBinary,
                     false);
             }).ToArray();
         }, cancellationToken);
@@ -1143,6 +1225,23 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             [path], repository =>
             {
                 var fullPath = Path.GetFullPath(Path.Combine(repository.Info.WorkingDirectory, path));
+                var conflict = repository.Index.Conflicts.FirstOrDefault(item =>
+                    string.Equals(
+                        item.Ours?.Path ?? item.Theirs?.Path ?? item.Ancestor?.Path,
+                        path,
+                        StringComparison.Ordinal));
+                if (conflict is null)
+                {
+                    throw new InvalidOperationException("该文件当前不在冲突索引中。");
+                }
+                if (IsBinary(ReadBlobBytes(repository, conflict.Ancestor)) ||
+                    IsBinary(ReadBlobBytes(repository, conflict.Ours)) ||
+                    IsBinary(ReadBlobBytes(repository, conflict.Theirs)) ||
+                    (File.Exists(fullPath) && IsBinary(fullPath)))
+                {
+                    throw new InvalidOperationException(
+                        "二进制冲突不能通过文本编辑器解决；本版本已阻止可能破坏文件的文本写入。");
+                }
                 File.WriteAllText(fullPath, resultText);
                 Commands.Stage(repository, path);
                 return GitOperationResult.Ok("conflict-resolve", $"已标记 {path} 为已解决", command);
@@ -1307,6 +1406,38 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             throw new InvalidOperationException(
                 "工作区存在已暂存或未暂存的未提交修改，请先提交或处理这些修改。");
         }
+    }
+
+    private static string PreserveStash(Repository repository, int index)
+    {
+        var stash = repository.Stashes[index]
+                    ?? throw new ArgumentOutOfRangeException(nameof(index), "临时现场不存在。");
+        return CreateSafetyReference(
+            repository,
+            "stash-backup",
+            stash.WorkTree.Id,
+            "Git Visualizer stash safety backup");
+    }
+
+    private static string NormalizeStashMessage(string message)
+    {
+        var normalized = message.Trim();
+        var separator = normalized.IndexOf(": ", StringComparison.Ordinal);
+        return separator >= 0 && separator + 2 < normalized.Length
+            ? normalized[(separator + 2)..]
+            : normalized;
+    }
+
+    private static string CreateSafetyReference(
+        Repository repository,
+        string category,
+        ObjectId target,
+        string logMessage)
+    {
+        var referenceName =
+            $"refs/gitvisualizer/{category}/{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}";
+        repository.Refs.Add(referenceName, target, logMessage);
+        return referenceName;
     }
 
     private static Branch ResolveMainline(Repository repository) =>

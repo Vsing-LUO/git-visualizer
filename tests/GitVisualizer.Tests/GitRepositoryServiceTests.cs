@@ -503,6 +503,193 @@ public sealed class GitRepositoryServiceTests
         Assert.Equal("origin/main", snapshot.Branches.Single(branch => branch.IsCurrent).TrackedBranch);
         using var bare = new Repository(remotePath);
         Assert.NotNull(bare.Branches["main"]);
+
+        await File.AppendAllTextAsync(System.IO.Path.Combine(local.Path, "readme.md"), "lease update\n");
+        await service.StageFilesAsync(local.Path, ["readme.md"]);
+        await service.CommitAsync(local.Path, "lease update", Identity);
+        var forceWithMatchingLease = await service.PushAsync(local.Path, "origin", forceWithLease: true);
+        Assert.True(forceWithMatchingLease.Success, forceWithMatchingLease.ErrorMessage);
+        using var localRepository = new Repository(local.Path);
+        Assert.Contains(localRepository.Refs, reference =>
+            reference.CanonicalName.StartsWith("refs/gitvisualizer/remote-recovery/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task StashPop_PreservesHiddenSafetyReference()
+    {
+        using var temporary = new TemporaryDirectory();
+        var service = CreateService();
+        await service.InitializeAsync(temporary.Path, Identity);
+        var path = System.IO.Path.Combine(temporary.Path, "notes.txt");
+        await File.WriteAllTextAsync(path, "base\n");
+        await service.StageFilesAsync(temporary.Path, ["notes.txt"]);
+        await service.CommitAsync(temporary.Path, "base", Identity);
+        await File.WriteAllTextAsync(path, "local work\n");
+
+        var saved = await service.SaveStashAsync(temporary.Path, "work in progress", Identity);
+        Assert.True(saved.Success, saved.ErrorMessage);
+        var stash = Assert.Single(await service.GetStashesAsync(temporary.Path));
+        Assert.Equal("work in progress", stash.Message);
+
+        var popped = await service.ApplyStashAsync(temporary.Path, stash.Index, pop: true);
+
+        Assert.True(popped.Success, popped.ErrorMessage);
+        Assert.Empty(await service.GetStashesAsync(temporary.Path));
+        Assert.Equal("local work\n", (await File.ReadAllTextAsync(path)).Replace("\r\n", "\n"));
+        using var repository = new Repository(temporary.Path);
+        Assert.Contains(repository.Refs, reference =>
+            reference.CanonicalName.StartsWith("refs/gitvisualizer/stash-backup/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ForceWithLease_RejectsStaleRemoteWithoutChangingIt()
+    {
+        using var first = new TemporaryDirectory();
+        using var second = new TemporaryDirectory();
+        using var remoteRoot = new TemporaryDirectory();
+        var remotePath = System.IO.Path.Combine(remoteRoot.Path, "remote.git");
+        Repository.Init(remotePath, true);
+        var service = CreateService();
+        await service.InitializeAsync(first.Path, Identity);
+        await File.WriteAllTextAsync(System.IO.Path.Combine(first.Path, "file.txt"), "base\n");
+        await service.StageFilesAsync(first.Path, ["file.txt"]);
+        await service.CommitAsync(first.Path, "base", Identity);
+        await service.AddRemoteAsync(first.Path, "origin", remotePath);
+        Assert.True((await service.PushAsync(first.Path, "origin", false)).Success);
+        using (var remote = new Repository(remotePath))
+        {
+            remote.Refs.UpdateTarget(remote.Refs.Head, "refs/heads/main", "set default branch");
+        }
+
+        Assert.True((await service.CloneAsync(remotePath, second.Path)).Success);
+        await File.AppendAllTextAsync(System.IO.Path.Combine(second.Path, "file.txt"), "remote advance\n");
+        await service.StageFilesAsync(second.Path, ["file.txt"]);
+        await service.CommitAsync(second.Path, "remote advance", Identity);
+        Assert.True((await service.PushAsync(second.Path, "origin", false)).Success);
+        string remoteTip;
+        using (var remote = new Repository(remotePath))
+        {
+            remoteTip = remote.Branches["main"].Tip.Id.Sha;
+        }
+
+        await File.AppendAllTextAsync(System.IO.Path.Combine(first.Path, "file.txt"), "local rewrite\n");
+        await service.StageFilesAsync(first.Path, ["file.txt"]);
+        await service.CommitAsync(first.Path, "local rewrite", Identity);
+        var rejected = await service.PushAsync(first.Path, "origin", forceWithLease: true);
+
+        Assert.False(rejected.Success);
+        Assert.Contains("租约", rejected.ErrorMessage);
+        using var unchangedRemote = new Repository(remotePath);
+        Assert.Equal(remoteTip, unchangedRemote.Branches["main"].Tip.Id.Sha);
+    }
+
+    [Fact]
+    public async Task BinaryConflict_TextResolutionIsBlockedWithoutChangingBytes()
+    {
+        using var temporary = new TemporaryDirectory();
+        var service = CreateService();
+        await service.InitializeAsync(temporary.Path, Identity);
+        var path = System.IO.Path.Combine(temporary.Path, "asset.bin");
+        await File.WriteAllBytesAsync(path, [0, 1, 2]);
+        await service.StageFilesAsync(temporary.Path, ["asset.bin"]);
+        await service.CommitAsync(temporary.Path, "base", Identity);
+        await service.CreateBranchAsync(temporary.Path, "feature");
+        await service.CheckoutBranchAsync(temporary.Path, "feature");
+        await File.WriteAllBytesAsync(path, [0, 3, 2]);
+        await service.StageFilesAsync(temporary.Path, ["asset.bin"]);
+        await service.CommitAsync(temporary.Path, "feature binary", Identity);
+        await service.CheckoutBranchAsync(temporary.Path, "main");
+        await File.WriteAllBytesAsync(path, [0, 4, 2]);
+        await service.StageFilesAsync(temporary.Path, ["asset.bin"]);
+        await service.CommitAsync(temporary.Path, "main binary", Identity);
+
+        var merged = await service.MergeAsync(temporary.Path, "feature", Identity);
+        Assert.True(merged.Success, merged.ErrorMessage);
+        var conflict = Assert.Single(await service.GetConflictsAsync(temporary.Path));
+        Assert.True(conflict.IsBinary);
+        var before = await File.ReadAllBytesAsync(path);
+
+        var blocked = await service.ResolveConflictAsync(temporary.Path, "asset.bin", "not binary");
+
+        Assert.False(blocked.Success);
+        Assert.Contains("二进制", blocked.ErrorMessage);
+        Assert.Equal(before, await File.ReadAllBytesAsync(path));
+    }
+
+    [Fact]
+    public async Task Pull_UsesExplicitRemoteEvenWhenAnotherRemoteIsTracked()
+    {
+        using var local = new TemporaryDirectory();
+        using var writer = new TemporaryDirectory();
+        using var remotes = new TemporaryDirectory();
+        var originPath = System.IO.Path.Combine(remotes.Path, "origin.git");
+        var upstreamPath = System.IO.Path.Combine(remotes.Path, "upstream.git");
+        Repository.Init(originPath, true);
+        Repository.Init(upstreamPath, true);
+        var service = CreateService();
+        await service.InitializeAsync(local.Path, Identity);
+        var localFile = System.IO.Path.Combine(local.Path, "file.txt");
+        await File.WriteAllTextAsync(localFile, "base\n");
+        await service.StageFilesAsync(local.Path, ["file.txt"]);
+        await service.CommitAsync(local.Path, "base", Identity);
+        await service.AddRemoteAsync(local.Path, "origin", originPath);
+        await service.AddRemoteAsync(local.Path, "upstream", upstreamPath);
+        Assert.True((await service.PushAsync(local.Path, "upstream", false)).Success);
+        Assert.True((await service.PushAsync(local.Path, "origin", false)).Success);
+        using (var upstream = new Repository(upstreamPath))
+        {
+            upstream.Refs.UpdateTarget(upstream.Refs.Head, "refs/heads/main", "set default branch");
+        }
+
+        Assert.True((await service.CloneAsync(upstreamPath, writer.Path)).Success);
+        await File.AppendAllTextAsync(System.IO.Path.Combine(writer.Path, "file.txt"), "from upstream\n");
+        await service.StageFilesAsync(writer.Path, ["file.txt"]);
+        await service.CommitAsync(writer.Path, "upstream work", Identity);
+        Assert.True((await service.PushAsync(writer.Path, "origin", false)).Success);
+
+        var pulled = await service.PullAsync(
+            local.Path, "upstream", "main", PullStrategy.Merge, identity: Identity);
+
+        Assert.True(pulled.Success, pulled.ErrorMessage);
+        Assert.Contains("from upstream", await File.ReadAllTextAsync(localFile));
+        var snapshot = await service.GetSnapshotAsync(local.Path);
+        Assert.Equal("origin/main", snapshot.Branches.Single(branch => branch.IsCurrent).TrackedBranch);
+    }
+
+    [Fact]
+    public async Task TagAndRebase_WorkflowsRoundTripThroughRepositoryService()
+    {
+        using var temporary = new TemporaryDirectory();
+        var service = CreateService();
+        await service.InitializeAsync(temporary.Path, Identity);
+        await File.WriteAllTextAsync(System.IO.Path.Combine(temporary.Path, "base.txt"), "base\n");
+        await service.StageFilesAsync(temporary.Path, ["base.txt"]);
+        await service.CommitAsync(temporary.Path, "base", Identity);
+        await service.CreateBranchAsync(temporary.Path, "feature");
+        await service.CheckoutBranchAsync(temporary.Path, "feature");
+        await File.WriteAllTextAsync(System.IO.Path.Combine(temporary.Path, "feature.txt"), "feature\n");
+        await service.StageFilesAsync(temporary.Path, ["feature.txt"]);
+        await service.CommitAsync(temporary.Path, "feature", Identity);
+        await service.CheckoutBranchAsync(temporary.Path, "main");
+        await File.WriteAllTextAsync(System.IO.Path.Combine(temporary.Path, "main.txt"), "main\n");
+        await service.StageFilesAsync(temporary.Path, ["main.txt"]);
+        await service.CommitAsync(temporary.Path, "main advance", Identity);
+        var mainTip = (await service.GetSnapshotAsync(temporary.Path)).Head.CommitId;
+        await service.CheckoutBranchAsync(temporary.Path, "feature");
+
+        var rebased = await service.RebaseOntoAsync(temporary.Path, "main", identity: Identity);
+        Assert.True(rebased.Success, rebased.ErrorMessage);
+        using (var repository = new Repository(temporary.Path))
+        {
+            Assert.Equal(mainTip, repository.Head.Tip.Parents.Single().Id.Sha);
+        }
+
+        var created = await service.CreateTagAsync(temporary.Path, "v-test");
+        Assert.True(created.Success, created.ErrorMessage);
+        Assert.Contains((await service.GetSnapshotAsync(temporary.Path)).Tags, tag => tag.Name == "v-test");
+        var deleted = await service.DeleteTagAsync(temporary.Path, "v-test");
+        Assert.True(deleted.Success, deleted.ErrorMessage);
+        Assert.DoesNotContain((await service.GetSnapshotAsync(temporary.Path)).Tags, tag => tag.Name == "v-test");
     }
 
     private static LibGitRepositoryService CreateService() =>

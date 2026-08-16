@@ -13,6 +13,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <StackPanel Margin="0,0,0,16">
@@ -25,7 +26,21 @@
                        Opacity="0.65"/>
         </StackPanel>
 
-        <StackPanel Grid.Row="1">
+        <Grid Grid.Row="1" Margin="0,0,0,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="100"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="100"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="远程仓库" VerticalAlignment="Center"/>
+            <ComboBox x:Name="RemoteBox" Grid.Column="1" DisplayMemberPath="Name"
+                      SelectionChanged="Remote_OnSelectionChanged"/>
+            <TextBlock Grid.Column="2" Text="远程分支" Margin="14,0,0,0" VerticalAlignment="Center"/>
+            <ComboBox x:Name="BranchBox" Grid.Column="3" IsEditable="True"/>
+        </Grid>
+
+        <StackPanel Grid.Row="2">
             <Border Margin="0,0,0,10"
                     Padding="16,13"
                     BorderBrush="#3A5B8CFF"
@@ -89,7 +104,7 @@
             </Border>
         </StackPanel>
 
-        <Border Grid.Row="2"
+        <Border Grid.Row="3"
                 Margin="0,16,0,18"
                 Padding="12,9"
                 Background="#152D8CFF"
@@ -99,7 +114,7 @@
                        Foreground="#FF2578C8"/>
         </Border>
 
-        <StackPanel Grid.Row="3"
+        <StackPanel Grid.Row="4"
                     Orientation="Horizontal"
                     HorizontalAlignment="Right">
             <Button Content="取消" IsCancel="True"/>

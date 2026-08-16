@@ -76,6 +76,8 @@ public interface IGitRepositoryService
     Task<GitOperationResult> SaveStashAsync(
         string repositoryPath, string message, GitIdentity? identity = null,
         CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<StashInfo>> GetStashesAsync(
+        string repositoryPath, CancellationToken cancellationToken = default);
     Task<GitOperationResult> ApplyStashAsync(
         string repositoryPath, int index, bool pop, CancellationToken cancellationToken = default);
     Task<GitOperationResult> DeleteStashAsync(
@@ -91,7 +93,8 @@ public interface IGitRepositoryService
         string repositoryPath, string remoteName, RemoteCredential? credential = null,
         CancellationToken cancellationToken = default);
     Task<GitOperationResult> PullAsync(
-        string repositoryPath, PullStrategy strategy, RemoteCredential? credential = null,
+        string repositoryPath, string remoteName, string remoteBranchName,
+        PullStrategy strategy, RemoteCredential? credential = null,
         GitIdentity? identity = null, CancellationToken cancellationToken = default);
     Task<GitOperationResult> PushAsync(
         string repositoryPath, string remoteName, bool forceWithLease,
