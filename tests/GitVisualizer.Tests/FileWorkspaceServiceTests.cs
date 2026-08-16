@@ -20,6 +20,11 @@ public sealed class FileWorkspaceServiceTests
         await service.SaveTextAsync(document, "一\n二\n三\n", false);
         Assert.Contains("\r\n三\r\n", await File.ReadAllTextAsync(path));
 
+        var metadataOnlyChange = await service.OpenTextAsync(path);
+        File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(2));
+        await service.SaveTextAsync(metadataOnlyChange, "metadata-only change is safe", false);
+        Assert.Equal("metadata-only change is safe", await File.ReadAllTextAsync(path));
+
         var stale = await service.OpenTextAsync(path);
         await Task.Delay(20);
         await File.AppendAllTextAsync(path, "external");

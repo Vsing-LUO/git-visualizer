@@ -73,34 +73,43 @@ internal static class GitServiceSupport
         return new CloneOptions(FetchOptions(credential));
     }
 
-    public static GitChangeState MapStatus(FileStatus status)
+    public static GitChangeState MapStatus(FileStatus status) =>
+        MapStatus(status, IsStaged(status));
+
+    public static GitChangeState MapStatus(FileStatus status, bool staged)
     {
         if (status.HasFlag(FileStatus.Conflicted))
         {
             return GitChangeState.Conflicted;
         }
-        if (status.HasFlag(FileStatus.Ignored))
+        if (!staged && status.HasFlag(FileStatus.Ignored))
         {
             return GitChangeState.Ignored;
         }
-        if (status.HasFlag(FileStatus.NewInWorkdir))
+        if (!staged && status.HasFlag(FileStatus.NewInWorkdir))
         {
             return GitChangeState.Untracked;
         }
-        if (status.HasFlag(FileStatus.NewInIndex))
+        if (staged && status.HasFlag(FileStatus.NewInIndex))
         {
             return GitChangeState.Added;
         }
-        if (status.HasFlag(FileStatus.RenamedInIndex) || status.HasFlag(FileStatus.RenamedInWorkdir))
+        if ((staged && status.HasFlag(FileStatus.RenamedInIndex)) ||
+            (!staged && status.HasFlag(FileStatus.RenamedInWorkdir)))
         {
             return GitChangeState.Renamed;
         }
-        if (status.HasFlag(FileStatus.DeletedFromIndex) || status.HasFlag(FileStatus.DeletedFromWorkdir))
+        if ((staged && status.HasFlag(FileStatus.DeletedFromIndex)) ||
+            (!staged && status.HasFlag(FileStatus.DeletedFromWorkdir)))
         {
             return GitChangeState.Deleted;
         }
-        if (status.HasFlag(FileStatus.ModifiedInIndex) || status.HasFlag(FileStatus.ModifiedInWorkdir) ||
-            status.HasFlag(FileStatus.TypeChangeInIndex) || status.HasFlag(FileStatus.TypeChangeInWorkdir))
+        if ((staged &&
+             (status.HasFlag(FileStatus.ModifiedInIndex) ||
+              status.HasFlag(FileStatus.TypeChangeInIndex))) ||
+            (!staged &&
+             (status.HasFlag(FileStatus.ModifiedInWorkdir) ||
+              status.HasFlag(FileStatus.TypeChangeInWorkdir))))
         {
             return GitChangeState.Modified;
         }
@@ -108,12 +117,23 @@ internal static class GitServiceSupport
         return GitChangeState.Unmodified;
     }
 
-    public static bool IsStaged(FileStatus status) =>
+    public static bool IsStaged(FileStatus status) => HasStagedChanges(status);
+
+    public static bool HasStagedChanges(FileStatus status) =>
         status.HasFlag(FileStatus.NewInIndex) ||
         status.HasFlag(FileStatus.ModifiedInIndex) ||
         status.HasFlag(FileStatus.DeletedFromIndex) ||
         status.HasFlag(FileStatus.RenamedInIndex) ||
         status.HasFlag(FileStatus.TypeChangeInIndex);
+
+    public static bool HasUnstagedChanges(FileStatus status) =>
+        status.HasFlag(FileStatus.NewInWorkdir) ||
+        status.HasFlag(FileStatus.ModifiedInWorkdir) ||
+        status.HasFlag(FileStatus.DeletedFromWorkdir) ||
+        status.HasFlag(FileStatus.RenamedInWorkdir) ||
+        status.HasFlag(FileStatus.TypeChangeInWorkdir) ||
+        status.HasFlag(FileStatus.Conflicted) ||
+        status.HasFlag(FileStatus.Ignored);
 
     public static string Quote(string value) =>
         value.Contains(' ', StringComparison.Ordinal) ? $"\"{value.Replace("\"", "\\\"", StringComparison.Ordinal)}\"" : value;

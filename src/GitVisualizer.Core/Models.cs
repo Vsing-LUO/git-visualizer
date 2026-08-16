@@ -79,21 +79,6 @@ public sealed record FileChange(
     long Size = 0,
     bool IsBinary = false);
 
-public sealed record DiffLine(char Origin, int? OldLine, int? NewLine, string Text);
-
-public sealed record DiffHunk(
-    string Id,
-    string Path,
-    string Header,
-    int OldStart,
-    int OldLines,
-    int NewStart,
-    int NewLines,
-    IReadOnlyList<DiffLine> Lines,
-    string Patch,
-    string SnapshotId,
-    bool IsStaged);
-
 public sealed record CommitNode(
     string Id,
     string ShortId,
@@ -101,9 +86,13 @@ public sealed record CommitNode(
     string AuthorName,
     string AuthorEmail,
     DateTimeOffset AuthoredAt,
-    IReadOnlyList<string> ParentIds,
-    IReadOnlyList<string> Decorations,
-    int Lane = 0);
+    IReadOnlyList<string> ParentIds);
+
+public sealed record CommitTreeEntry(
+    string Path,
+    bool IsDirectory,
+    long Size = 0,
+    bool IsBinary = false);
 
 public sealed record BranchInfo(
     string FriendlyName,
@@ -115,6 +104,43 @@ public sealed record BranchInfo(
     int AheadBy,
     int BehindBy);
 
+public sealed record HeadInfo(
+    string CommitId,
+    string? BranchName,
+    bool IsDetached)
+{
+    public bool IsAttached => !IsDetached && !string.IsNullOrWhiteSpace(BranchName);
+}
+
+public enum GitHistoryEventKind
+{
+    CommitCreated,
+    BranchCreated,
+    BranchDeleted,
+    Checkout,
+    Reset,
+    Merge,
+    Revert
+}
+
+public sealed record GitHistoryEvent(
+    string Id,
+    GitHistoryEventKind Kind,
+    string CommitId,
+    string? RelatedCommitId,
+    string? BranchName,
+    string Description,
+    DateTimeOffset OccurredAt);
+
+public sealed record BranchDeletionCheck(
+    string BranchName,
+    string MainlineName,
+    bool IsCurrent,
+    bool IsRemote,
+    bool IsMainline,
+    bool IsMergedIntoMainline,
+    int UncommittedChangeCount);
+
 public sealed record TagInfo(string Name, string TargetId);
 
 public sealed record RemoteInfo(
@@ -123,6 +149,22 @@ public sealed record RemoteInfo(
     string PushUrl,
     IReadOnlyList<string> FetchRefSpecs,
     IReadOnlyList<string> PushRefSpecs);
+
+public enum GitPushProgressStage
+{
+    Connecting,
+    Negotiating,
+    Packing,
+    Transferring,
+    UpdatingTracking
+}
+
+public sealed record GitPushProgress(
+    GitPushProgressStage Stage,
+    long Current = 0,
+    long Total = 0,
+    long Bytes = 0,
+    string? Message = null);
 
 public sealed record RepositoryFeatures(
     bool HasGitLfs,
@@ -133,10 +175,8 @@ public sealed record RepositoryFeatures(
 public sealed record RepositorySnapshot(
     string RepositoryPath,
     string WorkingDirectory,
-    string HeadId,
-    string CurrentBranch,
+    HeadInfo Head,
     bool IsBare,
-    bool IsHeadDetached,
     RepositoryOperationState OperationState,
     IReadOnlyList<FileChange> Changes,
     IReadOnlyList<BranchInfo> Branches,
@@ -181,7 +221,7 @@ public sealed record GitOperationResult(
         string equivalentCommand,
         Exception exception,
         string? errorCode = null) =>
-        new(false, operation, "操作失败", equivalentCommand, [], [],
+        new(false, operation, "操作失败", equivalentCommand, [exception.Message], [],
             errorCode ?? exception.GetType().Name, exception.Message);
 }
 
@@ -215,17 +255,20 @@ public sealed record OperationLogEntry(
     string Summary,
     string EquivalentCommand,
     string? RecoveryPointId,
-    string? ErrorCode);
+    string? ErrorCode,
+    IReadOnlyList<string>? Details = null)
+{
+    public string DetailsText => string.Join(Environment.NewLine, Details ?? []);
+}
 
 public sealed record AppSettings(
     IReadOnlyList<string> RecentRepositories,
     string Theme,
-    bool AutoSave,
     string? LastRepository,
     IReadOnlyDictionary<string, PullStrategy> PullStrategies)
 {
     public static AppSettings Default { get; } =
-        new([], "System", false, null, new Dictionary<string, PullStrategy>());
+        new([], "System", null, new Dictionary<string, PullStrategy>());
 }
 
 public sealed record TextDocument(
@@ -237,3 +280,9 @@ public sealed record TextDocument(
     bool IsReadOnly,
     bool IsBinary,
     long Size);
+
+public sealed record SystemNewFileType(
+    string Id,
+    string Extension,
+    string DisplayName,
+    string SuggestedFileName);

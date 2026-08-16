@@ -18,6 +18,16 @@ public interface IGitRepositoryService
         string repositoryPath, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<CommitNode>> GetHistoryAsync(
         string repositoryPath, int skip, int take, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<CommitNode>> GetBranchHistoryAsync(
+        string repositoryPath, string branchName, int skip, int take,
+        CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<GitHistoryEvent>> GetHistoryEventsAsync(
+        string repositoryPath, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<CommitTreeEntry>> GetCommitTreeAsync(
+        string repositoryPath, string commitId, CancellationToken cancellationToken = default);
+    Task<TextDocument> OpenCommitFileAsync(
+        string repositoryPath, string commitId, string path,
+        CancellationToken cancellationToken = default);
     Task<GitOperationResult> StageFilesAsync(
         string repositoryPath, IReadOnlyList<string> paths, CancellationToken cancellationToken = default);
     Task<GitOperationResult> UnstageFilesAsync(
@@ -32,8 +42,13 @@ public interface IGitRepositoryService
         CancellationToken cancellationToken = default);
     Task<GitOperationResult> CheckoutBranchAsync(
         string repositoryPath, string name, CancellationToken cancellationToken = default);
+    Task<GitOperationResult> CheckoutCommitAsync(
+        string repositoryPath, string commitId, CancellationToken cancellationToken = default);
     Task<GitOperationResult> RenameBranchAsync(
         string repositoryPath, string oldName, string newName,
+        CancellationToken cancellationToken = default);
+    Task<BranchDeletionCheck> CheckBranchDeletionAsync(
+        string repositoryPath, string name,
         CancellationToken cancellationToken = default);
     Task<GitOperationResult> DeleteBranchAsync(
         string repositoryPath, string name, bool force,
@@ -67,6 +82,9 @@ public interface IGitRepositoryService
         string repositoryPath, int index, CancellationToken cancellationToken = default);
     Task<GitOperationResult> AddRemoteAsync(
         string repositoryPath, string name, string url, CancellationToken cancellationToken = default);
+    Task<GitOperationResult> UpdateRemoteAsync(
+        string repositoryPath, string currentName, string newName, string url,
+        CancellationToken cancellationToken = default);
     Task<GitOperationResult> RemoveRemoteAsync(
         string repositoryPath, string name, CancellationToken cancellationToken = default);
     Task<GitOperationResult> FetchAsync(
@@ -77,7 +95,9 @@ public interface IGitRepositoryService
         GitIdentity? identity = null, CancellationToken cancellationToken = default);
     Task<GitOperationResult> PushAsync(
         string repositoryPath, string remoteName, bool forceWithLease,
-        RemoteCredential? credential = null, CancellationToken cancellationToken = default);
+        RemoteCredential? credential = null,
+        IProgress<GitPushProgress>? progress = null,
+        CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ConflictFile>> GetConflictsAsync(
         string repositoryPath, CancellationToken cancellationToken = default);
     Task<GitOperationResult> ResolveConflictAsync(
@@ -93,24 +113,11 @@ public interface IGitRepositoryService
 
 public interface IDiffService
 {
-    Task<IReadOnlyList<DiffHunk>> GetWorkingDiffAsync(
-        string repositoryPath, string path, bool staged,
-        CancellationToken cancellationToken = default);
     Task<string> GetUnifiedDiffAsync(
         string repositoryPath, string path, bool staged,
         CancellationToken cancellationToken = default);
     Task<string> CompareCommitsAsync(
         string repositoryPath, string oldCommitId, string newCommitId, string? path = null,
-        CancellationToken cancellationToken = default);
-}
-
-public interface IIndexPatchService
-{
-    Task<GitOperationResult> StageHunksAsync(
-        string repositoryPath, string path, IReadOnlyList<DiffHunk> hunks,
-        CancellationToken cancellationToken = default);
-    Task<GitOperationResult> UnstageHunksAsync(
-        string repositoryPath, string path, IReadOnlyList<DiffHunk> hunks,
         CancellationToken cancellationToken = default);
 }
 
@@ -171,4 +178,14 @@ public interface IFileWorkspaceService
     Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default);
     Task MoveAsync(string source, string destination, CancellationToken cancellationToken = default);
     Task DeleteAsync(string path, CancellationToken cancellationToken = default);
+}
+
+public interface ISystemNewFileService
+{
+    Task<IReadOnlyList<SystemNewFileType>> GetAvailableTypesAsync(
+        CancellationToken cancellationToken = default);
+    Task CreateAsync(
+        string path,
+        string typeId,
+        CancellationToken cancellationToken = default);
 }

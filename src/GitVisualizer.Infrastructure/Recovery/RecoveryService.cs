@@ -16,7 +16,7 @@ public sealed class RecoveryService : IRecoveryService
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    private readonly SemaphoreSlim gate = new(1, 1);
+    private static readonly SemaphoreSlim Gate = new(1, 1);
 
     public async Task<RecoveryPoint> CreateAsync(
         string repositoryPath,
@@ -25,7 +25,7 @@ public sealed class RecoveryService : IRecoveryService
         CancellationToken cancellationToken = default)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             LocalPaths.EnsureCreated();
@@ -101,7 +101,7 @@ public sealed class RecoveryService : IRecoveryService
         }
         finally
         {
-            gate.Release();
+            Gate.Release();
         }
     }
 
@@ -109,7 +109,7 @@ public sealed class RecoveryService : IRecoveryService
         RecoveryPoint point,
         CancellationToken cancellationToken = default)
     {
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (!File.Exists(point.ArchivePath))
@@ -155,7 +155,7 @@ public sealed class RecoveryService : IRecoveryService
         }
         finally
         {
-            gate.Release();
+            Gate.Release();
         }
     }
 
@@ -211,14 +211,14 @@ public sealed class RecoveryService : IRecoveryService
 
     public async Task PruneAsync(CancellationToken cancellationToken = default)
     {
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             await PruneCoreAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            gate.Release();
+            Gate.Release();
         }
     }
 

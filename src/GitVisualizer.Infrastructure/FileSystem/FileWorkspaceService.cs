@@ -66,7 +66,12 @@ public sealed class FileWorkspaceService : IFileWorkspaceService
         if (info.Exists && !allowExternalOverwrite &&
             info.LastWriteTimeUtc != original.LastWriteTime.UtcDateTime)
         {
-            throw new IOException("文件已被外部程序修改，请重新加载或确认覆盖。");
+            var current = await OpenTextAsync(original.Path, cancellationToken).ConfigureAwait(false);
+            if (current.IsBinary ||
+                !string.Equals(current.Text, original.Text, StringComparison.Ordinal))
+            {
+                throw new IOException("文件已被外部程序修改，请重新打开后再保存。");
+            }
         }
 
         var encoding = Encoding.GetEncoding(original.EncodingName);

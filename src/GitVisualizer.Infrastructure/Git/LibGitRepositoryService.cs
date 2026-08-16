@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.RegularExpressions;
 using GitVisualizer.Core;
 using LibGit2Sharp;
 using LibGitResetMode = LibGit2Sharp.ResetMode;
@@ -6,6 +8,13 @@ namespace GitVisualizer.Infrastructure.Git;
 
 public sealed class LibGitRepositoryService : IGitRepositoryService
 {
+    private static readonly Regex ReflogLinePattern = new(
+        """^(?<old>[0-9a-fA-F]+) (?<new>[0-9a-fA-F]+) .+ <[^>]*> (?<time>\d+) [+-]\d{4}\t(?<message>.*)$""",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex RevertedCommitPattern = new(
+        """This reverts commit (?<id>[0-9a-fA-F]+)""",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant |
+        RegexOptions.IgnoreCase);
     private readonly IRecoveryService recoveryService;
     private readonly IOperationLogStore operationLog;
 
@@ -117,17 +126,34 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 DetectRenamesInIndex = true,
                 DetectRenamesInWorkDir = true
             });
-            var changes = status.Select(entry =>
+            var changes = status.SelectMany(entry =>
             {
                 var fullPath = Path.Combine(repository.Info.WorkingDirectory, entry.FilePath);
                 var info = new FileInfo(fullPath);
-                return new FileChange(
-                    entry.FilePath,
-                    null,
-                    GitServiceSupport.MapStatus(entry.State),
-                    GitServiceSupport.IsStaged(entry.State),
-                    info.Exists ? info.Length : 0,
-                    info.Exists && IsBinary(fullPath));
+                var size = info.Exists ? info.Length : 0;
+                var isBinary = info.Exists && IsBinary(fullPath);
+                var entries = new List<FileChange>(2);
+                if (GitServiceSupport.HasStagedChanges(entry.State))
+                {
+                    entries.Add(new FileChange(
+                        entry.FilePath,
+                        null,
+                        GitServiceSupport.MapStatus(entry.State, staged: true),
+                        true,
+                        size,
+                        isBinary));
+                }
+                if (GitServiceSupport.HasUnstagedChanges(entry.State))
+                {
+                    entries.Add(new FileChange(
+                        entry.FilePath,
+                        null,
+                        GitServiceSupport.MapStatus(entry.State, staged: false),
+                        false,
+                        size,
+                        isBinary));
+                }
+                return entries;
             }).ToArray();
 
             var branches = repository.Branches.Select(branch =>
@@ -159,13 +185,15 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                     remote.PushRefSpecs.Select(x => x.Specification).ToArray())).ToArray();
 
             var features = DetectFeatures(repository);
+            var isHeadDetached = repository.Info.IsHeadDetached;
             return new RepositorySnapshot(
                 Path.GetFullPath(repositoryPath),
                 repository.Info.WorkingDirectory,
-                repository.Head.Tip?.Id.Sha ?? string.Empty,
-                repository.Head.FriendlyName,
+                new HeadInfo(
+                    repository.Head.Tip?.Id.Sha ?? string.Empty,
+                    isHeadDetached ? null : repository.Head.FriendlyName,
+                    isHeadDetached),
                 repository.Info.IsBare,
-                repository.Info.IsHeadDetached,
                 MapOperation(repository.Info.CurrentOperation),
                 changes,
                 branches,
@@ -181,20 +209,239 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         {
             cancellationToken.ThrowIfCancellationRequested();
             using var repository = new Repository(repositoryPath);
-            var decorations = BuildDecorations(repository);
-            return repository.Commits
+            var historyRoots = ReadHistoryRoots(repository);
+            var commits = historyRoots.Count == 0
+                ? repository.Commits
+                : repository.Commits.QueryBy(new CommitFilter
+                {
+                    IncludeReachableFrom = historyRoots,
+                    SortBy = CommitSortStrategies.Topological | CommitSortStrategies.Time
+                });
+            return commits
                 .Skip(Math.Max(0, skip))
                 .Take(Math.Clamp(take, 1, 1000))
-                .Select(commit => new CommitNode(
-                    commit.Id.Sha,
-                    commit.Id.Sha[..Math.Min(8, commit.Id.Sha.Length)],
-                    commit.MessageShort,
-                    commit.Author.Name,
-                    commit.Author.Email,
-                    commit.Author.When,
-                    commit.Parents.Select(parent => parent.Id.Sha).ToArray(),
-                    decorations.TryGetValue(commit.Id.Sha, out var values) ? values : []))
+                .Select(MapCommit)
                 .ToArray();
+        }, cancellationToken);
+
+    public Task<IReadOnlyList<CommitNode>> GetBranchHistoryAsync(
+        string repositoryPath,
+        string branchName,
+        int skip,
+        int take,
+        CancellationToken cancellationToken = default) =>
+        Task.Run<IReadOnlyList<CommitNode>>(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var repository = new Repository(repositoryPath);
+            var branch = repository.Branches[branchName]
+                         ?? throw new ArgumentException("分支不存在。", nameof(branchName));
+            return repository.Commits.QueryBy(new CommitFilter
+                {
+                    IncludeReachableFrom = branch,
+                    SortBy = CommitSortStrategies.Topological | CommitSortStrategies.Time
+                })
+                .Skip(Math.Max(0, skip))
+                .Take(Math.Clamp(take, 1, 1000))
+                .Select(MapCommit)
+                .ToArray();
+        }, cancellationToken);
+
+    public async Task<IReadOnlyList<GitHistoryEvent>> GetHistoryEventsAsync(
+        string repositoryPath,
+        CancellationToken cancellationToken = default)
+    {
+        var events = await Task.Run(
+            () =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                using var repository = new Repository(repositoryPath);
+                return ReadGitHistoryEvents(repository, cancellationToken);
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        var operationEntries = await operationLog.GetRecentAsync(
+                Path.GetFullPath(repositoryPath),
+                1000,
+                cancellationToken)
+            .ConfigureAwait(false);
+        foreach (var entry in operationEntries.Where(entry => entry.Success))
+        {
+            var details = entry.Details ?? [];
+            GitHistoryEvent? operationEvent = entry.Operation switch
+            {
+                "commit" or "amend" when HasDetails(details, 2) =>
+                    new GitHistoryEvent(
+                        $"operation:commit:{entry.Id}",
+                        GitHistoryEventKind.CommitCreated,
+                        details[0],
+                        null,
+                        details[1],
+                        $"该提交由 {details[1]} 分支产生",
+                        entry.Timestamp),
+                "branch-create" when HasDetails(details, 2) =>
+                    new GitHistoryEvent(
+                        $"operation:branch-create:{entry.Id}",
+                        GitHistoryEventKind.BranchCreated,
+                        details[1],
+                        null,
+                        details[0],
+                        $"分支 {details[0]} 从此提交创建",
+                        entry.Timestamp),
+                "branch-delete" when HasDetails(details, 2) =>
+                    new GitHistoryEvent(
+                        $"operation:branch-delete:{entry.Id}",
+                        GitHistoryEventKind.BranchDeleted,
+                        details[1],
+                        null,
+                        details[0],
+                        $"分支 {details[0]} 已删除；提交历史仍然保留",
+                        entry.Timestamp),
+                "branch-checkout" when HasDetails(details, 3) =>
+                    new GitHistoryEvent(
+                        $"operation:checkout:{entry.Id}",
+                        GitHistoryEventKind.Checkout,
+                        details[2],
+                        details[1],
+                        details[0],
+                        $"checkout 将 HEAD 从 {ShortId(details[1])} 移动到分支 {details[0]}（{ShortId(details[2])}）",
+                        entry.Timestamp),
+                "branch-checkout" when HasDetails(details, 2) =>
+                    new GitHistoryEvent(
+                        $"operation:checkout:{entry.Id}",
+                        GitHistoryEventKind.Checkout,
+                        details[1],
+                        null,
+                        details[0],
+                        $"checkout 将 HEAD 移动到分支 {details[0]}",
+                        entry.Timestamp),
+                "commit-checkout" when HasDetails(details, 2) =>
+                    new GitHistoryEvent(
+                        $"operation:checkout:{entry.Id}",
+                        GitHistoryEventKind.Checkout,
+                        details[1],
+                        details[0],
+                        null,
+                        $"checkout 将 HEAD 从 {ShortId(details[0])} 移动到提交 {ShortId(details[1])}（Detached HEAD）",
+                        entry.Timestamp),
+                "reset" when details.Count >= 4 &&
+                                  !string.IsNullOrWhiteSpace(details[1]) &&
+                                  !string.IsNullOrWhiteSpace(details[2]) =>
+                    new GitHistoryEvent(
+                        $"operation:reset:{entry.Id}",
+                        GitHistoryEventKind.Reset,
+                        details[2],
+                        details[1],
+                        string.IsNullOrWhiteSpace(details[0]) ? null : details[0],
+                        string.IsNullOrWhiteSpace(details[0])
+                            ? $"reset 将 HEAD 从 {ShortId(details[1])} 移动到 {ShortId(details[2])}"
+                            : $"reset 将分支 {details[0]} 从 {ShortId(details[1])} 移动到 {ShortId(details[2])}",
+                        entry.Timestamp),
+                "reset" when HasDetails(details, 1) =>
+                    new GitHistoryEvent(
+                        $"operation:reset:{entry.Id}",
+                        GitHistoryEventKind.Reset,
+                        details[0],
+                        null,
+                        details.Count > 1 ? details[1] : null,
+                        $"reset 将指针移动到 {ShortId(details[0])}",
+                        entry.Timestamp),
+                "merge" when HasDetails(details, 2) =>
+                    new GitHistoryEvent(
+                        $"operation:merge:{entry.Id}",
+                        GitHistoryEventKind.Merge,
+                        details[0],
+                        null,
+                        details[1],
+                        $"分支 {details[1]} 在此合并",
+                        entry.Timestamp),
+                "revert" when HasDetails(details, 2) =>
+                    new GitHistoryEvent(
+                        $"operation:revert:{entry.Id}",
+                        GitHistoryEventKind.Revert,
+                        details[0],
+                        details[1],
+                        null,
+                        $"该提交用于撤销 {ShortId(details[1])}；原提交历史仍然保留",
+                        entry.Timestamp),
+                _ => null
+            };
+            if (operationEvent is not null)
+            {
+                events.Add(operationEvent);
+            }
+        }
+
+        return events
+            .GroupBy(historyEvent => historyEvent.Id, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .OrderByDescending(historyEvent => historyEvent.OccurredAt)
+            .ToArray();
+    }
+
+    private static bool HasDetails(
+        IReadOnlyList<string> details,
+        int requiredCount) =>
+        details.Count >= requiredCount &&
+        details.Take(requiredCount).All(detail =>
+            !string.IsNullOrWhiteSpace(detail));
+
+    public Task<IReadOnlyList<CommitTreeEntry>> GetCommitTreeAsync(
+        string repositoryPath,
+        string commitId,
+        CancellationToken cancellationToken = default) =>
+        Task.Run<IReadOnlyList<CommitTreeEntry>>(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var repository = new Repository(repositoryPath);
+            var commit = repository.Lookup<Commit>(commitId)
+                         ?? throw new ArgumentException("提交不存在。", nameof(commitId));
+            var entries = new List<CommitTreeEntry>();
+            AddTreeEntries(commit.Tree, string.Empty, entries, cancellationToken);
+            return entries;
+        }, cancellationToken);
+
+    public Task<TextDocument> OpenCommitFileAsync(
+        string repositoryPath,
+        string commitId,
+        string path,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var repository = new Repository(repositoryPath);
+            var commit = repository.Lookup<Commit>(commitId)
+                         ?? throw new ArgumentException("提交不存在。", nameof(commitId));
+            var normalizedPath = path.Replace('\\', '/').TrimStart('/');
+            var entry = commit.Tree[normalizedPath]
+                        ?? throw new FileNotFoundException("该提交中不存在此文件。", normalizedPath);
+            if (entry.Target is not Blob blob)
+            {
+                throw new InvalidOperationException("所选项目不是普通文件。");
+            }
+
+            using var content = blob.GetContentStream();
+            using var buffer = new MemoryStream();
+            content.CopyTo(buffer);
+            var bytes = buffer.ToArray();
+            var isBinary = IsBinary(bytes);
+            var encoding = DetectEncoding(bytes, out var preambleLength);
+            var text = isBinary
+                ? string.Empty
+                : encoding.GetString(bytes, preambleLength, bytes.Length - preambleLength);
+            var newLine = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+            var displayPath =
+                $"{Path.GetFullPath(repositoryPath)}@{commit.Id.Sha[..Math.Min(8, commit.Id.Sha.Length)]}:{normalizedPath}";
+
+            return new TextDocument(
+                displayPath,
+                text,
+                encoding.WebName,
+                newLine,
+                commit.Author.When,
+                true,
+                isBinary,
+                bytes.LongLength);
         }, cancellationToken);
 
     public Task<GitOperationResult> StageFilesAsync(
@@ -268,7 +515,7 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                     amend ? "amend" : "commit",
                     amend ? "上一提交已修改" : "提交创建成功",
                     command,
-                    [commit.Id.Sha, commit.MessageShort]);
+                    [commit.Id.Sha, repository.Head.FriendlyName, commit.MessageShort]);
             }, cancellationToken: cancellationToken);
     }
 
@@ -286,7 +533,11 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                       ?? repository.Branches[startPoint]?.Tip
                       ?? throw new ArgumentException("找不到分支起点。", nameof(startPoint));
                 var branch = repository.CreateBranch(name, target);
-                return GitOperationResult.Ok("branch-create", $"已创建分支 {branch.FriendlyName}", command);
+                return GitOperationResult.Ok(
+                    "branch-create",
+                    $"已创建分支 {branch.FriendlyName}",
+                    command,
+                    [branch.FriendlyName, branch.Tip?.Id.Sha ?? string.Empty]);
             }, cancellationToken: cancellationToken);
     }
 
@@ -299,9 +550,47 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             {
                 EnsureClean(repository);
                 var branch = repository.Branches[name] ?? throw new ArgumentException("分支不存在。", nameof(name));
+                var oldHeadId = repository.Head.Tip?.Id.Sha ?? string.Empty;
                 Commands.Checkout(repository, branch);
-                return GitOperationResult.Ok("branch-checkout", $"已切换到 {branch.FriendlyName}", command);
+                return GitOperationResult.Ok(
+                    "branch-checkout",
+                    $"已切换到 {branch.FriendlyName}",
+                    command,
+                    [
+                        branch.FriendlyName,
+                        oldHeadId,
+                        branch.Tip?.Id.Sha ?? string.Empty
+                    ]);
             }, cancellationToken: cancellationToken);
+    }
+
+    public Task<GitOperationResult> CheckoutCommitAsync(
+        string repositoryPath,
+        string commitId,
+        CancellationToken cancellationToken = default)
+    {
+        var command = $"git checkout --detach {commitId}";
+        return ExecuteWriteAsync(
+            repositoryPath,
+            "commit-checkout",
+            command,
+            GitOperationRisk.Caution,
+            false,
+            null,
+            repository =>
+            {
+                EnsureClean(repository);
+                var commit = repository.Lookup<Commit>(commitId)
+                             ?? throw new ArgumentException("提交不存在。", nameof(commitId));
+                var oldHeadId = repository.Head.Tip?.Id.Sha ?? string.Empty;
+                Commands.Checkout(repository, commit);
+                return GitOperationResult.Ok(
+                    "commit-checkout",
+                    $"HEAD 已切换到 {ShortId(commit.Id.Sha)}（Detached HEAD）",
+                    command,
+                    [oldHeadId, commit.Id.Sha]);
+            },
+            cancellationToken: cancellationToken);
     }
 
     public Task<GitOperationResult> RenameBranchAsync(
@@ -325,23 +614,67 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         return ExecuteWriteAsync(repositoryPath, "branch-delete", command,
             force ? GitOperationRisk.Dangerous : GitOperationRisk.Caution, force, null, repository =>
             {
+                EnsureClean(repository);
                 var branch = repository.Branches[name] ?? throw new ArgumentException("分支不存在。");
+                if (branch.IsRemote)
+                {
+                    throw new InvalidOperationException("不能删除远程跟踪分支。");
+                }
                 if (branch.IsCurrentRepositoryHead)
                 {
-                    throw new InvalidOperationException("不能删除当前分支。");
+                    throw new InvalidOperationException("不能删除当前分支，请先切换到其他本地分支。");
                 }
-                if (!force && repository.Head.Tip is not null && branch.Tip is not null)
+                var mainline = ResolveMainline(repository);
+                if (string.Equals(
+                        branch.CanonicalName,
+                        mainline.CanonicalName,
+                        StringComparison.OrdinalIgnoreCase))
                 {
-                    var mergeBase = repository.ObjectDatabase.FindMergeBase(repository.Head.Tip, branch.Tip);
-                    if (mergeBase?.Id != branch.Tip.Id)
-                    {
-                        throw new InvalidOperationException("分支尚未完全合并，请使用强制删除并确认风险。");
-                    }
+                    throw new InvalidOperationException($"不能删除主线分支 {mainline.FriendlyName}。");
                 }
+                if (!force && !IsMergedInto(branch, mainline, repository))
+                {
+                    throw new InvalidOperationException(
+                        $"分支尚未合并到主线 {mainline.FriendlyName}，请确认风险后再强制删除。");
+                }
+                var deletedTipId = branch.Tip?.Id.Sha ?? string.Empty;
                 repository.Branches.Remove(branch);
-                return GitOperationResult.Ok("branch-delete", $"已删除分支 {name}", command);
+                return GitOperationResult.Ok(
+                    "branch-delete",
+                    $"已删除分支 {name}",
+                    command,
+                    [name, deletedTipId]);
             }, cancellationToken: cancellationToken);
     }
+
+    public Task<BranchDeletionCheck> CheckBranchDeletionAsync(
+        string repositoryPath,
+        string name,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var repository = new Repository(repositoryPath);
+            var branch = repository.Branches[name]
+                         ?? throw new ArgumentException("分支不存在。", nameof(name));
+            var mainline = ResolveMainline(repository);
+            var uncommittedChangeCount = repository.RetrieveStatus()
+                .Count(entry =>
+                    entry.State != FileStatus.Unaltered &&
+                    (entry.State & FileStatus.Ignored) == 0);
+
+            return new BranchDeletionCheck(
+                branch.FriendlyName,
+                mainline.FriendlyName,
+                branch.IsCurrentRepositoryHead,
+                branch.IsRemote,
+                string.Equals(
+                    branch.CanonicalName,
+                    mainline.CanonicalName,
+                    StringComparison.OrdinalIgnoreCase),
+                IsMergedInto(branch, mainline, repository),
+                uncommittedChangeCount);
+        }, cancellationToken);
 
     public Task<GitOperationResult> MergeAsync(
         string repositoryPath, string branchName, GitIdentity? identity = null,
@@ -357,7 +690,11 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 "merge",
                 result.Status == MergeStatus.Conflicts ? "合并产生冲突，请在冲突解决器中处理" : "分支合并完成",
                 command,
-                [$"状态：{result.Status}"],
+                [
+                    repository.Head.Tip?.Id.Sha ?? string.Empty,
+                    branchName,
+                    $"状态：{result.Status}"
+                ],
                 result.Status == MergeStatus.Conflicts ? ["存在未解决冲突"] : []);
         }, cancellationToken: cancellationToken);
     }
@@ -394,7 +731,12 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 var result = repository.Revert(commit, GitServiceSupport.ResolveSignature(repository, identity));
                 return GitOperationResult.Ok("revert",
                     result.Status == RevertStatus.Conflicts ? "撤销产生冲突" : "已创建撤销提交",
-                    command, [$"状态：{result.Status}"]);
+                    command,
+                    [
+                        repository.Head.Tip?.Id.Sha ?? string.Empty,
+                        commitId,
+                        $"状态：{result.Status}"
+                    ]);
             }, cancellationToken: cancellationToken);
     }
 
@@ -437,6 +779,10 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         {
             var commit = repository.Lookup<Commit>(targetId)
                          ?? throw new ArgumentException("目标提交不存在。");
+            var oldHeadId = repository.Head.Tip?.Id.Sha ?? string.Empty;
+            var branchName = repository.Info.IsHeadDetached
+                ? null
+                : repository.Head.FriendlyName;
             var nativeMode = mode switch
             {
                 GitResetMode.Soft => LibGitResetMode.Soft,
@@ -445,7 +791,18 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 _ => throw new ArgumentOutOfRangeException(nameof(mode))
             };
             repository.Reset(nativeMode, commit);
-            return GitOperationResult.Ok("reset", $"已完成 {option} reset", command);
+            var summary = mode switch
+            {
+                GitResetMode.Soft => "已回退并保留暂存修改",
+                GitResetMode.Mixed => "已回退并保留未暂存修改",
+                GitResetMode.Hard => "已彻底回到所选版本",
+                _ => throw new ArgumentOutOfRangeException(nameof(mode))
+            };
+            return GitOperationResult.Ok(
+                "reset",
+                summary,
+                command,
+                [branchName ?? string.Empty, oldHeadId, targetId, option]);
         }, cancellationToken: cancellationToken);
     }
 
@@ -538,6 +895,54 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             }, cancellationToken: cancellationToken);
     }
 
+    public Task<GitOperationResult> UpdateRemoteAsync(
+        string repositoryPath,
+        string currentName,
+        string newName,
+        string url,
+        CancellationToken cancellationToken = default)
+    {
+        var rename = !string.Equals(currentName, newName, StringComparison.Ordinal);
+        var command = rename
+            ? $"git remote rename {GitServiceSupport.Quote(currentName)} {GitServiceSupport.Quote(newName)} && " +
+              $"git remote set-url {GitServiceSupport.Quote(newName)} <remote-url>"
+            : $"git remote set-url {GitServiceSupport.Quote(currentName)} <remote-url>";
+        return ExecuteWriteAsync(
+            repositoryPath,
+            "remote-update",
+            command,
+            GitOperationRisk.Safe,
+            false,
+            null,
+            repository =>
+            {
+                if (repository.Network.Remotes[currentName] is null)
+                {
+                    throw new ArgumentException($"远程 {currentName} 不存在。");
+                }
+                if (rename && repository.Network.Remotes[newName] is not null)
+                {
+                    throw new InvalidOperationException($"远程名称 {newName} 已存在。");
+                }
+
+                var effectiveName = currentName;
+                if (rename)
+                {
+                    repository.Network.Remotes.Rename(currentName, newName);
+                    effectiveName = newName;
+                }
+                repository.Network.Remotes.Update(
+                    effectiveName,
+                    updater => updater.Url = url,
+                    updater => updater.PushUrl = url);
+                return GitOperationResult.Ok(
+                    "remote-update",
+                    $"已更新远程 {effectiveName}",
+                    command);
+            },
+            cancellationToken: cancellationToken);
+    }
+
     public Task<GitOperationResult> RemoveRemoteAsync(
         string repositoryPath, string name, CancellationToken cancellationToken = default)
     {
@@ -624,6 +1029,7 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         string remoteName,
         bool forceWithLease,
         RemoteCredential? credential = null,
+        IProgress<GitPushProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
         var command = forceWithLease ? "git push --force-with-lease" : $"git push {remoteName}";
@@ -638,7 +1044,38 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 }
                 var remote = repository.Network.Remotes[remoteName]
                              ?? throw new ArgumentException("远程不存在。");
+                progress?.Report(new GitPushProgress(
+                    GitPushProgressStage.Connecting,
+                    Message: $"正在连接 {remote.Name}"));
                 var options = GitServiceSupport.PushOptions(credential);
+                options.OnNegotiationCompletedBeforePush = updates =>
+                {
+                    var updateCount = updates.Count();
+                    progress?.Report(new GitPushProgress(
+                        GitPushProgressStage.Negotiating,
+                        updateCount,
+                        updateCount,
+                        Message: $"已协商 {updateCount} 个引用更新"));
+                    return !cancellationToken.IsCancellationRequested;
+                };
+                options.OnPackBuilderProgress = (stage, current, total) =>
+                {
+                    progress?.Report(new GitPushProgress(
+                        GitPushProgressStage.Packing,
+                        current,
+                        total,
+                        Message: stage.ToString()));
+                    return !cancellationToken.IsCancellationRequested;
+                };
+                options.OnPushTransferProgress = (current, total, bytes) =>
+                {
+                    progress?.Report(new GitPushProgress(
+                        GitPushProgressStage.Transferring,
+                        current,
+                        total,
+                        bytes));
+                    return !cancellationToken.IsCancellationRequested;
+                };
                 if (forceWithLease)
                 {
                     var tracked = branch.TrackedBranch;
@@ -664,6 +1101,9 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                         $"{branch.CanonicalName}:refs/heads/{branch.FriendlyName}",
                         options);
                 }
+                progress?.Report(new GitPushProgress(
+                    GitPushProgressStage.UpdatingTracking,
+                    Message: "正在更新本地上游分支配置"));
                 repository.Branches.Update(
                     branch,
                     updater => updater.Remote = remote.Name,
@@ -856,45 +1296,358 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             result.Summary,
             result.EquivalentCommand,
             result.RecoveryPointId,
-            result.ErrorCode), cancellationToken).ConfigureAwait(false);
+            result.ErrorCode,
+            result.Details), cancellationToken).ConfigureAwait(false);
     }
 
     private static void EnsureClean(Repository repository)
     {
         if (repository.RetrieveStatus().IsDirty)
         {
-            throw new InvalidOperationException("工作区存在未提交修改，请先提交、暂存工作现场或取消操作。");
+            throw new InvalidOperationException(
+                "工作区存在已暂存或未暂存的未提交修改，请先提交或处理这些修改。");
         }
     }
 
-    private static Dictionary<string, IReadOnlyList<string>> BuildDecorations(Repository repository)
+    private static Branch ResolveMainline(Repository repository) =>
+        repository.Branches["main"] ??
+        repository.Branches["master"] ??
+        repository.Branches.FirstOrDefault(branch =>
+            branch.IsCurrentRepositoryHead && !branch.IsRemote) ??
+        throw new InvalidOperationException("找不到可用于合并判断的本地主线分支。");
+
+    private static bool IsMergedInto(
+        Branch branch,
+        Branch mainline,
+        Repository repository)
     {
-        var result = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        if (branch.Tip is null)
+        {
+            return true;
+        }
+        if (mainline.Tip is null)
+        {
+            return false;
+        }
+
+        var mergeBase = repository.ObjectDatabase.FindMergeBase(mainline.Tip, branch.Tip);
+        return mergeBase?.Id == branch.Tip.Id;
+    }
+
+    private static List<GitHistoryEvent> ReadGitHistoryEvents(
+        Repository repository,
+        CancellationToken cancellationToken)
+    {
+        var result = new List<GitHistoryEvent>();
+        var roots = ReadHistoryRoots(repository);
+        var commits = roots.Count == 0
+            ? repository.Commits
+            : repository.Commits.QueryBy(new CommitFilter
+            {
+                IncludeReachableFrom = roots,
+                SortBy = CommitSortStrategies.Topological |
+                         CommitSortStrategies.Time
+            });
+
+        foreach (var commit in commits.Take(5000))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (commit.Parents.Skip(1).Any())
+            {
+                var sourceBranch = ExtractMergedBranchName(commit.MessageShort);
+                result.Add(new GitHistoryEvent(
+                    $"merge:{commit.Id.Sha}",
+                    GitHistoryEventKind.Merge,
+                    commit.Id.Sha,
+                    commit.Parents.Skip(1).FirstOrDefault()?.Id.Sha,
+                    sourceBranch,
+                    sourceBranch is null
+                        ? $"该节点为 merge commit，包含 {commit.Parents.Count()} 个父提交"
+                        : $"分支 {sourceBranch} 在此合并，提交包含 {commit.Parents.Count()} 个父提交",
+                    commit.Committer.When));
+            }
+
+            var revertedCommit = RevertedCommitPattern
+                .Match(commit.Message)
+                .Groups["id"]
+                .Value;
+            if (commit.MessageShort.StartsWith(
+                    "Revert",
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.IsNullOrEmpty(revertedCommit))
+            {
+                result.Add(new GitHistoryEvent(
+                    $"revert:{commit.Id.Sha}",
+                    GitHistoryEventKind.Revert,
+                    commit.Id.Sha,
+                    string.IsNullOrEmpty(revertedCommit)
+                        ? null
+                        : revertedCommit,
+                    null,
+                    string.IsNullOrEmpty(revertedCommit)
+                        ? "该提交用于撤销之前的修改；原提交历史仍然保留"
+                        : $"该提交用于撤销 {revertedCommit[..Math.Min(8, revertedCommit.Length)]}；原提交历史仍然保留",
+                    commit.Committer.When));
+            }
+        }
+
+        var headLogPath = Path.Combine(repository.Info.Path, "logs", "HEAD");
+        ReadReflogEvents(headLogPath, null, isHeadLog: true, result);
+
+        var branchLogsPath = Path.Combine(
+            repository.Info.Path,
+            "logs",
+            "refs",
+            "heads");
+        if (Directory.Exists(branchLogsPath))
+        {
+            try
+            {
+                foreach (var logPath in Directory.EnumerateFiles(
+                             branchLogsPath,
+                             "*",
+                             SearchOption.AllDirectories))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var branchName = Path.GetRelativePath(
+                            branchLogsPath,
+                            logPath)
+                        .Replace(Path.DirectorySeparatorChar, '/');
+                    ReadReflogEvents(
+                        logPath,
+                        branchName,
+                        isHeadLog: false,
+                        result);
+                }
+            }
+            catch (IOException)
+            {
+                // Commit-derived merge/revert events remain available.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Reflog access is optional for visualization.
+            }
+        }
+
+        return result;
+    }
+
+    private static void ReadReflogEvents(
+        string logPath,
+        string? branchName,
+        bool isHeadLog,
+        ICollection<GitHistoryEvent> destination)
+    {
+        if (!File.Exists(logPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var lineIndex = 0;
+            foreach (var line in File.ReadLines(logPath))
+            {
+                lineIndex++;
+                var match = ReflogLinePattern.Match(line);
+                if (!match.Success ||
+                    !long.TryParse(
+                        match.Groups["time"].Value,
+                        out var unixTime))
+                {
+                    continue;
+                }
+
+                var oldId = match.Groups["old"].Value;
+                var newId = match.Groups["new"].Value;
+                var message = match.Groups["message"].Value;
+                var occurredAt = DateTimeOffset.FromUnixTimeSeconds(unixTime);
+                var eventId = $"{Path.GetFullPath(logPath)}:{lineIndex}:{newId}";
+
+                if (!isHeadLog)
+                {
+                    if (message.StartsWith(
+                            "branch:",
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        destination.Add(new GitHistoryEvent(
+                            $"branch-created:{branchName}:{newId}",
+                            GitHistoryEventKind.BranchCreated,
+                            newId,
+                            IsZeroObjectId(oldId) ? null : oldId,
+                            branchName,
+                            $"分支 {branchName} 从此提交创建",
+                            occurredAt));
+                    }
+                    else if (message.StartsWith(
+                                 "commit",
+                                 StringComparison.OrdinalIgnoreCase))
+                    {
+                        destination.Add(new GitHistoryEvent(
+                            $"commit-created:{branchName}:{newId}",
+                            GitHistoryEventKind.CommitCreated,
+                            newId,
+                            IsZeroObjectId(oldId) ? null : oldId,
+                            branchName,
+                            $"该提交由 {branchName} 分支产生",
+                            occurredAt));
+                    }
+                    continue;
+                }
+
+                if (message.StartsWith(
+                        "checkout:",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    var destinationBranch = ExtractCheckoutDestination(message);
+                    destination.Add(new GitHistoryEvent(
+                        $"checkout:{eventId}",
+                        GitHistoryEventKind.Checkout,
+                        newId,
+                        IsZeroObjectId(oldId) ? null : oldId,
+                        destinationBranch,
+                        destinationBranch is null
+                            ? $"checkout 将 HEAD 从 {ShortId(oldId)} 移动到提交 {ShortId(newId)}（Detached HEAD）"
+                            : $"checkout 将 HEAD 从 {ShortId(oldId)} 移动到分支 {destinationBranch}（{ShortId(newId)}）",
+                        occurredAt));
+                }
+                else if (message.StartsWith(
+                             "reset:",
+                             StringComparison.OrdinalIgnoreCase))
+                {
+                    destination.Add(new GitHistoryEvent(
+                        $"reset:{eventId}",
+                        GitHistoryEventKind.Reset,
+                        newId,
+                        IsZeroObjectId(oldId) ? null : oldId,
+                        null,
+                        $"reset 将当前分支指针移动到 {ShortId(newId)}",
+                        occurredAt));
+                }
+            }
+        }
+        catch (IOException)
+        {
+            // A reflog can rotate while the graph refreshes.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Reflog event annotations are best-effort.
+        }
+    }
+
+    private static string? ExtractMergedBranchName(string message)
+    {
+        const string prefix = "Merge branch '";
+        if (!message.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var end = message.IndexOf('\'', prefix.Length);
+        return end <= prefix.Length
+            ? null
+            : message[prefix.Length..end];
+    }
+
+    private static string? ExtractCheckoutDestination(string message)
+    {
+        const string marker = " to ";
+        var markerIndex = message.LastIndexOf(
+            marker,
+            StringComparison.OrdinalIgnoreCase);
+        if (markerIndex < 0 || markerIndex + marker.Length >= message.Length)
+        {
+            return null;
+        }
+
+        var destination = message[(markerIndex + marker.Length)..];
+        return destination.Length >= 7 &&
+               destination.All(Uri.IsHexDigit)
+            ? null
+            : destination;
+    }
+
+    private static bool IsZeroObjectId(string id) =>
+        id.All(character => character == '0');
+
+    private static string ShortId(string id) =>
+        id[..Math.Min(8, id.Length)];
+
+    private static IReadOnlyList<Commit> ReadHistoryRoots(Repository repository)
+    {
+        var result = new Dictionary<string, Commit>(StringComparer.Ordinal);
+
+        void AddCommit(Commit? commit)
+        {
+            if (commit is not null)
+            {
+                result.TryAdd(commit.Id.Sha, commit);
+            }
+        }
+
+        AddCommit(repository.Head.Tip);
         foreach (var branch in repository.Branches)
         {
-            if (branch.Tip is null)
-            {
-                continue;
-            }
-            if (!result.TryGetValue(branch.Tip.Id.Sha, out var values))
-            {
-                values = [];
-                result.Add(branch.Tip.Id.Sha, values);
-            }
-            values.Add(branch.FriendlyName);
+            AddCommit(branch.Tip);
         }
         foreach (var tag in repository.Tags)
         {
-            var id = tag.Target.Peel<GitObject>().Id.Sha;
-            if (!result.TryGetValue(id, out var values))
-            {
-                values = [];
-                result.Add(id, values);
-            }
-            values.Add($"tag:{tag.FriendlyName}");
+            AddCommit(tag.Target.Peel<Commit>());
         }
-        return result.ToDictionary(x => x.Key, x => (IReadOnlyList<string>)x.Value);
+
+        var logsPath = Path.Combine(repository.Info.Path, "logs");
+        if (!Directory.Exists(logsPath))
+        {
+            return result.Values.ToArray();
+        }
+
+        try
+        {
+            foreach (var logPath in Directory.EnumerateFiles(
+                         logsPath,
+                         "*",
+                         SearchOption.AllDirectories))
+            {
+                foreach (var line in File.ReadLines(logPath))
+                {
+                    var firstSpace = line.IndexOf(' ');
+                    var secondSpace = firstSpace < 0
+                        ? -1
+                        : line.IndexOf(' ', firstSpace + 1);
+                    if (firstSpace <= 0 || secondSpace <= firstSpace + 1)
+                    {
+                        continue;
+                    }
+
+                    AddCommit(repository.Lookup<Commit>(line[..firstSpace]));
+                    AddCommit(repository.Lookup<Commit>(
+                        line[(firstSpace + 1)..secondSpace]));
+                }
+            }
+        }
+        catch (IOException)
+        {
+            // Refs remain a complete fallback if a reflog changes during refresh.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Some repositories are readable even when their reflogs are not.
+        }
+
+        return result.Values.ToArray();
     }
+
+    private static CommitNode MapCommit(Commit commit) =>
+        new(
+            commit.Id.Sha,
+            commit.Id.Sha[..Math.Min(8, commit.Id.Sha.Length)],
+            commit.MessageShort,
+            commit.Author.Name,
+            commit.Author.Email,
+            commit.Author.When,
+            commit.Parents.Select(parent => parent.Id.Sha).ToArray());
 
     private static RepositoryFeatures DetectFeatures(Repository repository)
     {
@@ -931,7 +1684,65 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         using var stream = File.OpenRead(path);
         Span<byte> bytes = stackalloc byte[8192];
         var count = stream.Read(bytes);
-        return bytes[..count].Contains((byte)0);
+        return IsBinary(bytes[..count]);
+    }
+
+    private static bool IsBinary(ReadOnlySpan<byte> bytes) =>
+        bytes[..Math.Min(bytes.Length, 8192)].Contains((byte)0);
+
+    private static Encoding DetectEncoding(byte[] bytes, out int preambleLength)
+    {
+        if (bytes.AsSpan().StartsWith(Encoding.UTF8.GetPreamble()))
+        {
+            preambleLength = Encoding.UTF8.GetPreamble().Length;
+            return new UTF8Encoding(true);
+        }
+
+        if (bytes.AsSpan().StartsWith(Encoding.Unicode.GetPreamble()))
+        {
+            preambleLength = Encoding.Unicode.GetPreamble().Length;
+            return Encoding.Unicode;
+        }
+
+        if (bytes.AsSpan().StartsWith(Encoding.BigEndianUnicode.GetPreamble()))
+        {
+            preambleLength = Encoding.BigEndianUnicode.GetPreamble().Length;
+            return Encoding.BigEndianUnicode;
+        }
+
+        preambleLength = 0;
+        return new UTF8Encoding(false);
+    }
+
+    private static void AddTreeEntries(
+        Tree tree,
+        string prefix,
+        ICollection<CommitTreeEntry> result,
+        CancellationToken cancellationToken)
+    {
+        foreach (var entry in tree)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = string.IsNullOrEmpty(prefix)
+                ? entry.Name
+                : $"{prefix}/{entry.Name}";
+            if (entry.Target is Tree childTree)
+            {
+                result.Add(new CommitTreeEntry(path, true));
+                AddTreeEntries(childTree, path, result, cancellationToken);
+            }
+            else if (entry.Target is Blob blob)
+            {
+                using var content = blob.GetContentStream();
+                var sample = new byte[8192];
+                var count = content.Read(sample, 0, sample.Length);
+                result.Add(new CommitTreeEntry(path, false, blob.Size, IsBinary(sample.AsSpan(0, count))));
+            }
+            else
+            {
+                result.Add(new CommitTreeEntry(path, false, 0, true));
+            }
+        }
     }
 
     private static bool IsBinary(byte[] bytes) => bytes.AsSpan(0, Math.Min(bytes.Length, 8192)).Contains((byte)0);

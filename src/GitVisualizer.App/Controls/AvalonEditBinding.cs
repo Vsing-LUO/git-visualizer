@@ -15,12 +15,12 @@ public static class AvalonEditBinding
             typeof(string),
             typeof(AvalonEditBinding),
             new FrameworkPropertyMetadata(
-                string.Empty,
+                null,
                 FrameworkPropertyMetadataOptions.BindsTwoWayByDefault,
                 OnTextChanged));
 
     public static string GetText(DependencyObject element) =>
-        (string)element.GetValue(TextProperty);
+        element.GetValue(TextProperty) as string ?? string.Empty;
 
     public static void SetText(DependencyObject element, string value) =>
         element.SetValue(TextProperty, value);
@@ -48,7 +48,8 @@ public static class AvalonEditBinding
         }
 
         editor.SetValue(IsUpdatingProperty, true);
-        SetText(editor, editor.Text);
+        editor.SetCurrentValue(TextProperty, editor.Text);
+        editor.GetBindingExpression(TextProperty)?.UpdateSource();
         editor.SetValue(IsUpdatingProperty, false);
     }
 }

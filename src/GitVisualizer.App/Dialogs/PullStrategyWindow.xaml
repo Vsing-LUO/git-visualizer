@@ -1,0 +1,111 @@
+<Window x:Class="GitVisualizer.App.Dialogs.PullStrategyWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="选择拉取方式"
+        Width="660"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Margin="0,0,0,16">
+            <TextBlock Text="请选择如何把远程更新加入当前分支"
+                       FontSize="20"
+                       FontWeight="SemiBold"/>
+            <TextBlock Margin="0,7,0,0"
+                       Text="本地和远程都有新内容时，不同方式会产生不同的提交记录。"
+                       FontSize="12"
+                       Opacity="0.65"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="1">
+            <Border Margin="0,0,0,10"
+                    Padding="16,13"
+                    BorderBrush="#3A5B8CFF"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                <RadioButton x:Name="MergeOption"
+                             GroupName="PullStrategy"
+                             VerticalContentAlignment="Top">
+                    <StackPanel Margin="8,0,0,0">
+                        <TextBlock Text="保留双方修改并合并（推荐）"
+                                   FontSize="15"
+                                   FontWeight="SemiBold"/>
+                        <TextBlock Margin="0,5,0,0"
+                                   Text="保留本地和远程的提交，并生成一条合并记录。不会改写已有提交，适合大多数用户。"
+                                   TextWrapping="Wrap"
+                                   FontSize="12"
+                                   Opacity="0.68"/>
+                    </StackPanel>
+                </RadioButton>
+            </Border>
+
+            <Border Margin="0,0,0,10"
+                    Padding="16,13"
+                    BorderBrush="#28000000"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                <RadioButton x:Name="RebaseOption"
+                             GroupName="PullStrategy"
+                             VerticalContentAlignment="Top">
+                    <StackPanel Margin="8,0,0,0">
+                        <TextBlock Text="把本地修改接到远程更新之后（最整洁）"
+                                   FontSize="15"
+                                   FontWeight="SemiBold"/>
+                        <TextBlock Margin="0,5,0,0"
+                                   Text="先应用远程更新，再重新排列尚未推送的本地提交。记录更整齐，但提交编号会发生变化。"
+                                   TextWrapping="Wrap"
+                                   FontSize="12"
+                                   Opacity="0.68"/>
+                    </StackPanel>
+                </RadioButton>
+            </Border>
+
+            <Border Padding="16,13"
+                    BorderBrush="#28000000"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                <RadioButton x:Name="FastForwardOnlyOption"
+                             GroupName="PullStrategy"
+                             VerticalContentAlignment="Top">
+                    <StackPanel Margin="8,0,0,0">
+                        <TextBlock Text="仅在没有分歧时更新（最安全）"
+                                   FontSize="15"
+                                   FontWeight="SemiBold"/>
+                        <TextBlock Margin="0,5,0,0"
+                                   Text="只有本地没有独立提交时才更新；如果双方都发生了修改，操作会停止，不会自动合并。"
+                                   TextWrapping="Wrap"
+                                   FontSize="12"
+                                   Opacity="0.68"/>
+                    </StackPanel>
+                </RadioButton>
+            </Border>
+        </StackPanel>
+
+        <Border Grid.Row="2"
+                Margin="0,16,0,18"
+                Padding="12,9"
+                Background="#152D8CFF"
+                CornerRadius="6">
+            <TextBlock Text="不确定如何选择时，请使用“保留双方修改并合并（推荐）”。"
+                       FontSize="12"
+                       Foreground="#FF2578C8"/>
+        </Border>
+
+        <StackPanel Grid.Row="3"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button Content="取消" IsCancel="True"/>
+            <Button Content="开始拉取"
+                    IsDefault="True"
+                    Click="Confirm_OnClick"/>
+        </StackPanel>
+    </Grid>
+</Window>

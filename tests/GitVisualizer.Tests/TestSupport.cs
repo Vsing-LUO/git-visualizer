@@ -82,3 +82,37 @@ internal sealed class MemoryCredentialVault : ICredentialVault
         return Task.CompletedTask;
     }
 }
+
+internal sealed class CallbackProgress<T>(Action<T> callback) : IProgress<T>
+{
+    public void Report(T value) => callback(value);
+}
+
+internal sealed class NoOpRepositoryWatcherFactory : IRepositoryWatcherFactory
+{
+    public IRepositoryWatcher Create(string repositoryPath) =>
+        new NoOpRepositoryWatcher(repositoryPath);
+
+    private sealed class NoOpRepositoryWatcher(string repositoryPath) : IRepositoryWatcher
+    {
+        public event EventHandler? RepositoryChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public string RepositoryPath { get; } = repositoryPath;
+
+        public void Start()
+        {
+        }
+
+        public void Stop()
+        {
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+}

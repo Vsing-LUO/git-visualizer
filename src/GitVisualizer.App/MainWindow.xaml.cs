@@ -1,7 +1,11 @@
+using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media.Imaging;
 using GitVisualizer.App.Controls;
 using GitVisualizer.App.Dialogs;
 using GitVisualizer.App.ViewModels;
@@ -12,6 +16,12 @@ namespace GitVisualizer.App;
 
 public partial class MainWindow : Window
 {
+    private static readonly HashSet<string> BuiltInNewFileExtensions =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".txt", ".md", ".docx", ".cs", ".json", ".xml"
+        };
+
     private readonly MainWindowViewModel viewModel;
     private Point dragStart;
     private FileTreeItem? selectedTreeItem;
@@ -22,6 +32,20 @@ public partial class MainWindow : Window
         this.viewModel = viewModel;
         DataContext = viewModel;
         PreviewKeyDown += MainWindow_OnPreviewKeyDown;
+        viewModel.ConflictDetected += ViewModel_OnConflictDetected;
+    }
+
+    private void ViewModel_OnConflictDetected(
+        object? sender,
+        ConflictDetectedEventArgs e)
+    {
+        MessageBox.Show(
+            this,
+            $"{e.OperationName}过程中检测到 {e.ConflictCount} 个冲突文件，当前 Git 操作已暂停。\n\n" +
+            "请确认此提示，然后在“冲突”页面逐个检查并解决冲突。所有冲突解决前，请勿继续当前操作。",
+            "检测到 Git 冲突",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
     }
 
     private async void OpenRepository_OnClick(object sender, RoutedEventArgs e)
@@ -44,11 +68,11 @@ public partial class MainWindow : Window
 
     private async void CloneRepository_OnClick(object sender, RoutedEventArgs e)
     {
-        var urlDialog = new TextPromptWindow("克隆远程仓库", "输入 HTTPS、SSH 或本地 Git 仓库地址：")
+        var cloneDialog = new CloneRepositoryWindow
         {
             Owner = this
         };
-        if (urlDialog.ShowDialog() != true)
+        if (cloneDialog.ShowDialog() != true)
         {
             return;
         }
@@ -57,9 +81,109 @@ public partial class MainWindow : Window
         {
             return;
         }
-        var repositoryName = GuessRepositoryName(urlDialog.Value);
+        var repositoryName = GuessRepositoryName(cloneDialog.RepositoryUrl);
         var destination = Path.Combine(folderDialog.FolderName, repositoryName);
-        await viewModel.CloneRepositoryAsync(urlDialog.Value, destination, null);
+        var result = await viewModel.CloneRepositoryAsync(
+            cloneDialog.RepositoryUrl,
+            destination,
+            cloneDialog.Credential);
+        if (result.Success)
+        {
+            if (cloneDialog.Credential is { Remember: true } credential)
+            {
+                await viewModel.SaveCloneCredentialAsync(
+                    cloneDialog.RepositoryUrl,
+                    credential);
+            }
+            MessageBox.Show(
+                this,
+                $"远程仓库已成功克隆。\n\n克隆位置：\n{Path.GetFullPath(destination)}",
+                "克隆完成",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        else
+        {
+            var errorMessage = result.ErrorMessage ?? result.Summary;
+            if (errorMessage.Contains(
+                    "authentication required but no callback set",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                errorMessage =
+                    "远程仓库要求身份验证。请重新克隆并选择“令牌登录”，然后填写用户名和访问令牌。";
+            }
+            MessageBox.Show(
+                this,
+                errorMessage,
+                "克隆失败",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private async void ConfigureRemote_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!viewModel.HasRepository)
+        {
+            MessageBox.Show(this, "请先打开一个本地仓库。", "配置远程仓库");
+            return;
+        }
+
+        var dialog = new RemoteConfigurationWindow(viewModel.Remotes)
+        {
+            Owner = this
+        };
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var result = dialog.RemoteToRemove is { } remoteToRemove
+            ? await viewModel.RemoveRemoteAsync(remoteToRemove)
+            : await viewModel.ConfigureRemoteAsync(
+                dialog.OriginalName,
+                dialog.RemoteName,
+                dialog.RemoteUrl);
+        if (!result.Success)
+        {
+            MessageBox.Show(
+                this,
+                result.ErrorMessage ?? result.Summary,
+                dialog.RemoteToRemove is null
+                    ? "无法保存远程仓库"
+                    : "无法删除远程仓库",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private async void Push_OnClick(object sender, RoutedEventArgs e)
+    {
+        var remote = viewModel.SelectedPushRemote;
+        if (remote is null)
+        {
+            MessageBox.Show(
+                this,
+                "请先配置远程仓库，并在“推送”按钮左侧选择推送目标。",
+                "选择推送目标",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var branchName = viewModel.Head?.BranchName ?? "当前 HEAD";
+        var monitor = new PushMonitorWindow(
+            remote.Name,
+            remote.PushUrl,
+            branchName)
+        {
+            Owner = this
+        };
+        monitor.Show();
+
+        var progress = new Progress<GitPushProgress>(monitor.Report);
+        var result = await viewModel.PushToRemoteAsync(remote, progress);
+        monitor.Complete(result);
     }
 
     private async Task<bool> TryOpenOrInitializeAsync(string path)
@@ -132,11 +256,82 @@ public partial class MainWindow : Window
         }
     }
 
+    private void RecentRepositories_OnPreviewMouseRightButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (sender is ListBox listBox &&
+            e.OriginalSource is DependencyObject source &&
+            ItemsControl.ContainerFromElement(listBox, source) is ListBoxItem item)
+        {
+            item.IsSelected = true;
+            item.Focus();
+        }
+    }
+
+    private async void RemoveRepository_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (RecentRepositoriesList.SelectedItem is not string path)
+        {
+            return;
+        }
+
+        var answer = MessageBox.Show(
+            this,
+            $"只把以下仓库从左侧导航列表中移除？\n\n{path}\n\n" +
+            "仓库目录、项目文件和 .git 数据都不会被删除。",
+            "从仓库列表中移除",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (answer == MessageBoxResult.Yes)
+        {
+            await viewModel.RemoveRecentRepositoryAsync(path);
+        }
+    }
+
     private async void RepositorySort_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (((ComboBox)sender).SelectedItem is string mode)
         {
             await viewModel.SortRepositoriesAsync(mode);
+        }
+    }
+
+    private void OpenRepositoryFolder_OnClick(object sender, RoutedEventArgs e)
+    {
+        var path = RecentRepositoriesList.SelectedItem as string;
+        if (string.IsNullOrWhiteSpace(path) && viewModel.HasRepository)
+        {
+            path = viewModel.ActiveRepositoryPath;
+        }
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+        {
+            MessageBox.Show(
+                this,
+                "所选仓库目录不存在，请重新打开仓库。",
+                "打开仓库目录",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = Path.GetFullPath(path),
+                UseShellExecute = true
+            });
+            viewModel.StatusText = $"已在文件资源管理器中打开 {path}";
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                $"无法打开仓库目录：\n\n{exception.Message}",
+                "打开仓库目录",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
         }
     }
 
@@ -148,11 +343,116 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void CheckoutBranch_OnClick(object sender, RoutedEventArgs e)
+    private async void BranchList_OnPreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
     {
-        if (BranchList.SelectedItem is BranchInfo branch)
+        if (e.ClickCount != 1 ||
+            sender is not ListBox listBox ||
+            e.OriginalSource is not DependencyObject source ||
+            ItemsControl.ContainerFromElement(listBox, source) is not ListBoxItem
+            {
+                DataContext: BranchInfo branch
+            })
         {
-            await viewModel.CheckoutBranchAsync(branch);
+            return;
+        }
+
+        await viewModel.SelectBranchAsync(branch);
+    }
+
+    private void BranchList_OnPreviewMouseRightButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (sender is ListBox listBox &&
+            e.OriginalSource is DependencyObject source &&
+            ItemsControl.ContainerFromElement(listBox, source) is ListBoxItem item)
+        {
+            item.IsSelected = true;
+            item.Focus();
+        }
+    }
+
+    private async void DeleteBranch_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (BranchList.SelectedItem is not BranchInfo branch)
+        {
+            return;
+        }
+
+        BranchDeletionCheck check;
+        try
+        {
+            check = await viewModel.CheckBranchDeletionAsync(branch);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                $"无法检查分支是否可删除：{exception.Message}",
+                "删除分支",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            return;
+        }
+
+        if (check.UncommittedChangeCount > 0)
+        {
+            MessageBox.Show(
+                this,
+                $"当前工作区还有 {check.UncommittedChangeCount} 项已暂存或未暂存的未提交修改。\n\n" +
+                "请先提交或处理这些修改，删除分支操作已中断。",
+                "不能删除分支",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+        if (check.IsRemote)
+        {
+            MessageBox.Show(
+                this,
+                "这里显示的是远程跟踪分支，不能通过本地分支删除功能移除。",
+                "不能删除分支",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+        if (check.IsCurrent)
+        {
+            MessageBox.Show(
+                this,
+                "不能删除当前分支。请先双击切换到其他本地分支，再执行删除。",
+                "不能删除分支",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+        if (check.IsMainline)
+        {
+            MessageBox.Show(
+                this,
+                $"不能删除主线分支 {check.MainlineName}。",
+                "不能删除分支",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var force = !check.IsMergedIntoMainline;
+        var message = force
+            ? $"分支 {check.BranchName} 尚未合并到主线 {check.MainlineName}。\n\n" +
+              "强制删除可能丢失仅存在于该分支的提交。仍要删除吗？"
+            : $"确定删除已经合并到主线 {check.MainlineName} 的分支 {check.BranchName} 吗？";
+        var answer = MessageBox.Show(
+            this,
+            message,
+            force ? "分支尚未合并" : "删除分支",
+            MessageBoxButton.YesNo,
+            force ? MessageBoxImage.Warning : MessageBoxImage.Question);
+        if (answer == MessageBoxResult.Yes)
+        {
+            await viewModel.DeleteBranchAsync(branch, force);
         }
     }
 
@@ -163,7 +463,7 @@ public partial class MainWindow : Window
             return;
         }
         if (MessageBox.Show(this,
-                $"把 {branch.FriendlyName} 合并到 {viewModel.CurrentBranch}？",
+                $"把 {branch.FriendlyName} 合并到 {viewModel.Head?.BranchName ?? viewModel.CurrentBranch}？",
                 "合并预览", MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK)
         {
             await viewModel.MergeBranchAsync(branch);
@@ -185,15 +485,19 @@ public partial class MainWindow : Window
         }
 
         await viewModel.SelectFileAsync(selectedTreeItem);
-        if (viewModel.IsExternalOnlyDocument)
+        if (viewModel.IsExternalOnlyDocument &&
+            viewModel.CanOpenCurrentDocumentExternally)
         {
             await viewModel.OpenFileExternallyAsync(selectedTreeItem.FullPath);
             e.Handled = true;
         }
     }
 
-    private void CommitGraph_OnCommitSelected(object? sender, CommitSelectedEventArgs e) =>
-        viewModel.SelectCommit(e.Commit);
+    private async void CommitGraph_OnCommitSelected(object? sender, CommitSelectedEventArgs e) =>
+        await viewModel.SelectCommitAsync(e.Commit);
+
+    private async void CommitGraph_OnBranchSelected(object? sender, BranchSelectedEventArgs e) =>
+        await viewModel.SelectBranchAsync(e.Branch);
 
     private async void ChangeList_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -201,6 +505,25 @@ public partial class MainWindow : Window
         {
             await viewModel.SelectChangeAsync(change);
         }
+    }
+
+    private async void ChangeList_OnPreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (sender is not ListBox listBox ||
+            e.OriginalSource is not DependencyObject source ||
+            ItemsControl.ContainerFromElement(listBox, source) is not ListBoxItem
+            {
+                DataContext: FileChange clickedChange
+            } ||
+            listBox.SelectedItem is not FileChange selectedChange ||
+            !selectedChange.Equals(clickedChange))
+        {
+            return;
+        }
+
+        await viewModel.SelectChangeAsync(clickedChange);
     }
 
     private void ChangeList_OnPreviewMouseMove(object sender, MouseEventArgs e)
@@ -299,22 +622,23 @@ public partial class MainWindow : Window
 
     private async void Reset_OnClick(object sender, RoutedEventArgs e)
     {
-        var mode = Prompt("Reset", "输入模式：soft、mixed 或 hard", "mixed");
-        if (mode is null)
+        if (viewModel.SelectedCommit is not { } commit)
         {
+            MessageBox.Show(this, "请先选择一个提交。", "回退当前分支",
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        if (!Enum.TryParse<GitResetMode>(mode, true, out var resetMode))
+
+        var dialog = new ResetModeWindow(
+            viewModel.CurrentBranch,
+            commit.ShortId,
+            commit.Message)
         {
-            MessageBox.Show(this, "模式必须是 soft、mixed 或 hard。", "Reset");
-            return;
-        }
-        var preview = viewModel.Preview(resetMode == GitResetMode.Hard ? "reset-hard" : "reset");
-        if (MessageBox.Show(this,
-                $"{preview.Description}\n\n{preview.EquivalentCommand}\n\n执行前会创建恢复点。是否继续？",
-                "高风险操作预览", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+            Owner = this
+        };
+        if (dialog.ShowDialog() == true)
         {
-            await viewModel.ResetSelectedAsync(resetMode);
+            await viewModel.ResetSelectedAsync(dialog.SelectedMode);
         }
     }
 
@@ -324,34 +648,47 @@ public partial class MainWindow : Window
         {
             return;
         }
-        var defaultValue = viewModel.SavedPullStrategy switch
+        var dialog = new PullStrategyWindow(viewModel.SavedPullStrategy)
         {
-            PullStrategy.Rebase => "rebase",
-            PullStrategy.FastForwardOnly => "ff-only",
-            _ => "merge"
+            Owner = this
         };
-        var value = Prompt(
-            "拉取策略",
-            "本地和远程都产生提交时，选择 merge、rebase 或 ff-only。\n此选择会按仓库记住：",
-            defaultValue);
-        if (value is null)
+        if (dialog.ShowDialog() != true)
         {
             return;
         }
-        var strategy = value.ToLowerInvariant() switch
+        var remoteName = viewModel.Remotes.FirstOrDefault()?.Name ?? "上游远程仓库";
+        var branchName = viewModel.Head?.BranchName ?? viewModel.CurrentBranch;
+        var result = await viewModel.PullAsync(dialog.SelectedStrategy);
+        if (result.Success && !viewModel.HasConflicts)
         {
-            "merge" => PullStrategy.Merge,
-            "rebase" => PullStrategy.Rebase,
-            "ff-only" => PullStrategy.FastForwardOnly,
-            _ => PullStrategy.Ask
-        };
-        if (strategy == PullStrategy.Ask)
-        {
-            MessageBox.Show(this, "请输入 merge、rebase 或 ff-only。", "拉取策略");
-            return;
+            MessageBox.Show(
+                this,
+                $"远程更新已成功拉取。\n\n" +
+                $"远程仓库：{remoteName}\n" +
+                $"当前分支：{branchName}\n" +
+                $"拉取方式：{PullStrategyDisplayName(dialog.SelectedStrategy)}\n\n" +
+                $"结果：{result.Summary}",
+                "拉取完成",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
         }
-        await viewModel.PullAsync(strategy);
+        else if (!result.Success)
+        {
+            MessageBox.Show(
+                this,
+                result.ErrorMessage ?? result.Summary,
+                "拉取失败",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
     }
+
+    private static string PullStrategyDisplayName(PullStrategy strategy) => strategy switch
+    {
+        PullStrategy.Rebase => "把本地修改接到远程更新之后",
+        PullStrategy.FastForwardOnly => "仅在没有分歧时更新",
+        _ => "保留双方修改并合并"
+    };
 
     private async void Identity_OnClick(object sender, RoutedEventArgs e)
     {
@@ -390,11 +727,14 @@ public partial class MainWindow : Window
             MessageBox.Show(this, "当前仓库没有远程地址。", "远程凭据");
             return;
         }
-        var url = viewModel.Remotes[0].FetchUrl;
+        var remote = viewModel.SelectedPushRemote ?? viewModel.Remotes[0];
+        var url = remote.FetchUrl;
         if (url.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase) ||
             (url.Contains('@') && url.Contains(':')))
         {
-            await viewModel.SaveRemoteCredentialAsync(new RemoteCredential(CredentialKind.SshAgent));
+            await viewModel.SaveRemoteCredentialAsync(
+                remote,
+                new RemoteCredential(CredentialKind.SshAgent));
             MessageBox.Show(
                 this,
                 "此远程将使用 Windows SSH Agent。请先把私钥加入系统 SSH Agent；应用不会读取或记录私钥内容。",
@@ -403,10 +743,18 @@ public partial class MainWindow : Window
                 MessageBoxImage.Information);
             return;
         }
-        var dialog = new CredentialWindow { Owner = this };
+        var savedCredential = await viewModel.LoadSavedRemoteCredentialAsync(remote);
+        var dialog = new CredentialWindow(remote.FetchUrl, savedCredential) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
-            await viewModel.SaveRemoteCredentialAsync(dialog.Credential);
+            if (dialog.DeleteRequested)
+            {
+                await viewModel.DeleteRemoteCredentialAsync(remote);
+            }
+            else
+            {
+                await viewModel.SaveRemoteCredentialAsync(remote, dialog.Credential);
+            }
         }
     }
 
@@ -416,14 +764,62 @@ public partial class MainWindow : Window
     private async void NewFolder_OnClick(object sender, RoutedEventArgs e) =>
         await CreateFileSystemItemAsync(true, "新建文件夹");
 
-    private void NewItemMenu_OnClick(object sender, RoutedEventArgs e)
+    private async void NewItemMenu_OnClick(object sender, RoutedEventArgs e)
     {
         if (!viewModel.HasRepository || sender is not Button button || button.ContextMenu is null)
         {
             return;
         }
+        await PopulateSystemNewTypesAsync();
         button.ContextMenu.PlacementTarget = button;
         button.ContextMenu.IsOpen = true;
+    }
+
+    private async Task PopulateSystemNewTypesAsync()
+    {
+        SystemNewTypesMenuItem.Items.Clear();
+        SystemNewTypesMenuItem.Items.Add(new MenuItem
+        {
+            Header = "正在读取系统新建类型…",
+            IsEnabled = false
+        });
+
+        try
+        {
+            var types = (await viewModel.GetSystemNewFileTypesAsync())
+                .Where(type => !BuiltInNewFileExtensions.Contains(type.Extension))
+                .ToArray();
+            SystemNewTypesMenuItem.Items.Clear();
+            foreach (var type in types)
+            {
+                var item = new MenuItem
+                {
+                    Header = $"{type.DisplayName} ({type.Extension})",
+                    Tag = type,
+                    Icon = CreateFileTypeIcon(type.Extension)
+                };
+                item.Click += SystemNewItemType_OnClick;
+                SystemNewTypesMenuItem.Items.Add(item);
+            }
+
+            if (types.Length == 0)
+            {
+                SystemNewTypesMenuItem.Items.Add(new MenuItem
+                {
+                    Header = "未发现其他安全的系统模板",
+                    IsEnabled = false
+                });
+            }
+        }
+        catch (Exception exception)
+        {
+            SystemNewTypesMenuItem.Items.Clear();
+            SystemNewTypesMenuItem.Items.Add(new MenuItem
+            {
+                Header = $"读取失败：{exception.Message}",
+                IsEnabled = false
+            });
+        }
     }
 
     private async void NewItemType_OnClick(object sender, RoutedEventArgs e)
@@ -445,10 +841,25 @@ public partial class MainWindow : Window
         await CreateFileSystemItemAsync(directory, suggestedName, type == "folder" ? null : type);
     }
 
+    private async void SystemNewItemType_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: SystemNewFileType type })
+        {
+            return;
+        }
+
+        await CreateFileSystemItemAsync(
+            false,
+            type.SuggestedFileName,
+            type.Extension,
+            type);
+    }
+
     private async Task CreateFileSystemItemAsync(
         bool directory,
         string suggestedName,
-        string? requiredExtension = null)
+        string? requiredExtension = null,
+        SystemNewFileType? systemType = null)
     {
         if (!viewModel.HasRepository)
         {
@@ -480,14 +891,35 @@ public partial class MainWindow : Window
                 MessageBoxImage.Warning);
             return;
         }
-        if (requiredExtension is not null &&
-            string.IsNullOrEmpty(Path.GetExtension(name)))
+        if (requiredExtension is not null)
         {
-            name += requiredExtension;
+            var actualExtension = Path.GetExtension(name);
+            if (string.IsNullOrEmpty(actualExtension))
+            {
+                name += requiredExtension;
+            }
+            else if (systemType is not null &&
+                     !actualExtension.Equals(requiredExtension, StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show(
+                    this,
+                    $"该模板要求文件名使用 {requiredExtension} 扩展名。",
+                    "扩展名不匹配",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
         }
         try
         {
-            await viewModel.CreateFileAsync(parent, name, directory);
+            if (systemType is null)
+            {
+                await viewModel.CreateFileAsync(parent, name, directory);
+            }
+            else
+            {
+                await viewModel.CreateSystemFileAsync(parent, name, systemType);
+            }
         }
         catch (Exception exception)
         {
@@ -561,20 +993,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void AutoSaveCheckBox_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        if (viewModel.AutoSave)
-        {
-            return;
-        }
-        if (MessageBox.Show(this,
-                "开启自动保存后，输入内容会在 1 秒后写入磁盘并立即改变 Git 工作区。\n是否继续？",
-                "自动保存风险提示", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
-        {
-            e.Handled = true;
-        }
-    }
-
     private async void MainWindow_OnPreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.S && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
@@ -612,4 +1030,69 @@ public partial class MainWindow : Window
         return Path.GetFullPath(left)
             .Equals(Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
     }
+
+    private static Image? CreateFileTypeIcon(string extension)
+    {
+        var info = new ShellFileInfo();
+        var result = SHGetFileInfo(
+            "file" + extension,
+            FileAttributeNormal,
+            ref info,
+            (uint)Marshal.SizeOf<ShellFileInfo>(),
+            ShellGetFileInfoIcon | ShellGetFileInfoSmallIcon | ShellGetFileInfoUseFileAttributes);
+        if (result == nint.Zero || info.IconHandle == nint.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            var source = Imaging.CreateBitmapSourceFromHIcon(
+                info.IconHandle,
+                Int32Rect.Empty,
+                BitmapSizeOptions.FromEmptyOptions());
+            source.Freeze();
+            return new Image
+            {
+                Source = source,
+                Width = 16,
+                Height = 16
+            };
+        }
+        finally
+        {
+            DestroyIcon(info.IconHandle);
+        }
+    }
+
+    private const uint FileAttributeNormal = 0x80;
+    private const uint ShellGetFileInfoIcon = 0x100;
+    private const uint ShellGetFileInfoSmallIcon = 0x1;
+    private const uint ShellGetFileInfoUseFileAttributes = 0x10;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct ShellFileInfo
+    {
+        public nint IconHandle;
+        public int IconIndex;
+        public uint Attributes;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string? DisplayName;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
+        public string? TypeName;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern nint SHGetFileInfo(
+        string path,
+        uint fileAttributes,
+        ref ShellFileInfo shellFileInfo,
+        uint shellFileInfoSize,
+        uint flags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyIcon(nint iconHandle);
 }

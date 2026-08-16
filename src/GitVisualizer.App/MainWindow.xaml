@@ -52,6 +52,9 @@
                             Click="InitializeRepository_OnClick"/>
                     <Button Style="{StaticResource ToolbarButton}" Content="{DynamicResource Action.Clone}"
                             Click="CloneRepository_OnClick"/>
+                    <Button Style="{StaticResource ToolbarButton}" Content="配置远程仓库"
+                            Click="ConfigureRemote_OnClick"
+                            ToolTip="添加远程仓库，或查看和更新已有远程配置"/>
                     <Separator Margin="5,8"/>
                     <Button Style="{StaticResource ToolbarButton}" Content="{DynamicResource Action.Refresh}"
                             Command="{Binding RefreshCommand}"/>
@@ -59,16 +62,22 @@
                             Command="{Binding FetchCommand}"/>
                     <Button Style="{StaticResource ToolbarButton}" Content="{DynamicResource Action.Pull}"
                             Click="Pull_OnClick"/>
+                    <ComboBox Width="150"
+                              Margin="5,7,2,7"
+                              Padding="7,2"
+                              VerticalContentAlignment="Center"
+                              ItemsSource="{Binding Remotes}"
+                              SelectedItem="{Binding SelectedPushRemote, Mode=TwoWay}"
+                              DisplayMemberPath="Name"
+                              ToolTip="选择推送目标远程仓库"/>
                     <Button Style="{StaticResource ToolbarButton}" Content="{DynamicResource Action.Push}"
-                            Command="{Binding PushCommand}"/>
+                            Click="Push_OnClick"
+                            ToolTip="推送到左侧选中的远程仓库，并打开推送监视窗口"/>
                     <Separator Margin="5,8"/>
                     <Button Style="{StaticResource ToolbarButton}" Content="身份" Click="Identity_OnClick"/>
                     <Button Style="{StaticResource ToolbarButton}" Content="凭据" Click="Credential_OnClick"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
-                    <CheckBox x:Name="AutoSaveCheckBox" Content="自动保存" Margin="8,0"
-                              VerticalAlignment="Center" IsChecked="{Binding AutoSave}"
-                              PreviewMouseLeftButtonDown="AutoSaveCheckBox_OnPreviewMouseLeftButtonDown"/>
                     <ProgressBar Width="100" Height="4" IsIndeterminate="True"
                                  Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"/>
                 </StackPanel>
@@ -82,7 +91,7 @@
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="255" MinWidth="190"/>
+                <ColumnDefinition Width="255" MinWidth="190" MaxWidth="420"/>
                 <ColumnDefinition Width="5"/>
                 <ColumnDefinition Width="*" MinWidth="420"/>
                 <ColumnDefinition Width="5"/>
@@ -99,18 +108,28 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
-                    <DockPanel>
-                        <TextBlock Style="{StaticResource SectionTitle}"
+                    <DockPanel LastChildFill="False">
+                        <TextBlock DockPanel.Dock="Left"
+                                   Style="{StaticResource SectionTitle}"
                                    Text="{DynamicResource Section.Repositories}"/>
-                        <ComboBox DockPanel.Dock="Right" Width="100" Height="25" Margin="0,6,8,4"
+                        <Button DockPanel.Dock="Right"
+                                Content="打开目录"
+                                Height="25" MinHeight="25"
+                                Padding="8,2" Margin="0,6,8,4"
+                                IsEnabled="{Binding HasRepository}"
+                                Click="OpenRepositoryFolder_OnClick"
+                                ToolTip="在文件资源管理器中打开所选仓库"/>
+                        <ComboBox DockPanel.Dock="Right" Width="100" Height="25" Margin="0,6,6,4"
                                   ItemsSource="{Binding RepositorySortModes}"
                                   SelectedItem="{Binding RepositorySortMode, Mode=TwoWay}"
                                   SelectionChanged="RepositorySort_OnSelectionChanged"
                                   ToolTip="仓库排序方式"/>
                     </DockPanel>
-                    <ListBox Grid.Row="1" ItemsSource="{Binding RecentRepositories}"
+                    <ListBox x:Name="RecentRepositoriesList"
+                             Grid.Row="1" ItemsSource="{Binding RecentRepositories}"
                              SelectedItem="{Binding SelectedRepository, Mode=TwoWay}"
-                             SelectionChanged="RecentRepositories_OnSelectionChanged">
+                             SelectionChanged="RecentRepositories_OnSelectionChanged"
+                             PreviewMouseRightButtonDown="RecentRepositories_OnPreviewMouseRightButtonDown">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <StackPanel>
@@ -120,34 +139,67 @@
                                 </StackPanel>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
+                        <ListBox.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="从列表中移除"
+                                          Click="RemoveRepository_OnClick"/>
+                            </ContextMenu>
+                        </ListBox.ContextMenu>
                     </ListBox>
                     <TextBlock Grid.Row="2" Style="{StaticResource SectionTitle}" Text="{DynamicResource Section.Branches}"/>
                     <ListBox x:Name="BranchList" Grid.Row="3" ItemsSource="{Binding Branches}"
-                             MouseDoubleClick="BranchList_OnMouseDoubleClick">
+                             SelectedItem="{Binding SelectedBranch, Mode=TwoWay}"
+                             MouseDoubleClick="BranchList_OnMouseDoubleClick"
+                             PreviewMouseLeftButtonDown="BranchList_OnPreviewMouseLeftButtonDown"
+                             PreviewMouseRightButtonDown="BranchList_OnPreviewMouseRightButtonDown">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <DockPanel>
-                                    <TextBlock DockPanel.Dock="Right" FontSize="9" Opacity="0.6"
-                                               Text="{Binding AheadBy, StringFormat=↑{0}}"/>
-                                    <TextBlock Text="{Binding FriendlyName}" TextTrimming="CharacterEllipsis"
-                                               FontWeight="{Binding IsCurrent, Converter={StaticResource BoolToFontWeightConverter}, FallbackValue=Normal}"/>
-                                </DockPanel>
+                                <TextBlock Height="30"
+                                           Margin="12,0"
+                                           Text="{Binding FriendlyName}"
+                                           TextTrimming="CharacterEllipsis"
+                                           VerticalAlignment="Center"
+                                           ToolTip="单击查看该分支指向的提交；双击切换分支"
+                                           FontWeight="{Binding IsCurrent, Converter={StaticResource BoolToFontWeightConverter}, FallbackValue=Normal}"/>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                         <ListBox.ContextMenu>
                             <ContextMenu>
-                                <MenuItem Header="切换到分支" Click="CheckoutBranch_OnClick"/>
                                 <MenuItem Header="合并到当前分支" Click="MergeBranch_OnClick"/>
+                                <Separator/>
+                                <MenuItem Header="删除该分支…" Click="DeleteBranch_OnClick"/>
                             </ContextMenu>
                         </ListBox.ContextMenu>
                     </ListBox>
                     <DockPanel Grid.Row="4">
                         <TextBlock Style="{StaticResource SectionTitle}" Text="{DynamicResource Section.Files}"/>
+                        <TextBlock Margin="4,0,6,0"
+                                   Text="{Binding FileTreeContextText}"
+                                   VerticalAlignment="Center"
+                                   FontSize="11"
+                                   Opacity="0.65"/>
+                        <Button DockPanel.Dock="Right"
+                                Content="返回工作区"
+                                Command="{Binding ShowWorkingTreeCommand}"
+                                Height="27" MinHeight="27"
+                                Padding="8,2" Margin="0,6,8,4"
+                                Visibility="{Binding IsBrowsingHistoricalCommit, Converter={StaticResource BoolToVisibility}}"/>
                         <Button x:Name="NewItemButton" DockPanel.Dock="Right"
                                 Content="＋ 新建文件" Height="27" MinHeight="27"
                                 Padding="8,2" Margin="0,6,8,4"
+                                IsEnabled="{Binding CanModifyFileTree}"
                                 Click="NewItemMenu_OnClick"
                                 ToolTip="在当前选中的目录中新建文件或文件夹">
+                            <Button.Style>
+                                <Style TargetType="Button">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsBrowsingHistoricalCommit}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
                             <Button.ContextMenu>
                                 <ContextMenu Placement="Bottom">
                                     <MenuItem Header="📁  文件夹" Tag="folder"
@@ -165,6 +217,11 @@
                                               Click="NewItemType_OnClick"/>
                                     <MenuItem Header="&lt;/&gt;  XML 文件 (.xml)" Tag=".xml"
                                               Click="NewItemType_OnClick"/>
+                                    <Separator/>
+                                    <MenuItem x:Name="SystemNewTypesMenuItem"
+                                              Header="电脑上的其他类型">
+                                        <MenuItem Header="正在读取系统新建类型…" IsEnabled="False"/>
+                                    </MenuItem>
                                 </ContextMenu>
                             </Button.ContextMenu>
                         </Button>
@@ -174,12 +231,16 @@
                               SelectedItemChanged="FileTree_OnSelectedItemChanged"
                               MouseDoubleClick="FileTree_OnMouseDoubleClick">
                         <TreeView.ContextMenu>
-                            <ContextMenu>
-                                <MenuItem Header="新建文件" Click="NewFile_OnClick"/>
-                                <MenuItem Header="新建文件夹" Click="NewFolder_OnClick"/>
-                                <MenuItem Header="重命名" Click="RenameFile_OnClick"/>
+                            <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                <MenuItem Header="新建文件" Click="NewFile_OnClick"
+                                          IsEnabled="{Binding CanModifyFileTree}"/>
+                                <MenuItem Header="新建文件夹" Click="NewFolder_OnClick"
+                                          IsEnabled="{Binding CanModifyFileTree}"/>
+                                <MenuItem Header="重命名" Click="RenameFile_OnClick"
+                                          IsEnabled="{Binding CanModifyFileTree}"/>
                                 <Separator/>
-                                <MenuItem Header="删除…" Click="DeleteFile_OnClick"/>
+                                <MenuItem Header="删除…" Click="DeleteFile_OnClick"
+                                          IsEnabled="{Binding CanModifyFileTree}"/>
                             </ContextMenu>
                         </TreeView.ContextMenu>
                     </TreeView>
@@ -195,15 +256,29 @@
                     <RowDefinition Height="42"/>
                 </Grid.RowDefinitions>
                 <DockPanel Margin="10,4">
-                    <TextBlock Text="{DynamicResource Section.History}" FontSize="16" FontWeight="SemiBold"
-                               VerticalAlignment="Center"/>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{DynamicResource Section.History}" FontSize="16" FontWeight="SemiBold"
+                                   VerticalAlignment="Center"/>
+                        <Border Margin="8,0,0,0" Padding="8,2"
+                                CornerRadius="9" Background="#182D8CFF">
+                            <TextBlock Text="{Binding HistoryContextText}"
+                                       FontSize="10.5" Foreground="#FF2578C8"/>
+                        </Border>
+                    </StackPanel>
                     <TextBlock DockPanel.Dock="Right" Text="点击节点查看详情；右键区域执行历史操作"
                                FontSize="11" Opacity="0.55" VerticalAlignment="Center"/>
                 </DockPanel>
                 <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto"
                               VerticalScrollBarVisibility="Auto">
                     <controls:CommitGraphControl Items="{Binding History}"
-                                                 CommitSelected="CommitGraph_OnCommitSelected"/>
+                                                 Branches="{Binding Branches}"
+                                                 Tags="{Binding Tags}"
+                                                 Events="{Binding HistoryEvents}"
+                                                 Head="{Binding Head}"
+                                                 SelectedBranchName="{Binding SelectedHistoryBranchName}"
+                                                 SelectedCommit="{Binding SelectedCommit, Mode=TwoWay}"
+                                                 CommitSelected="CommitGraph_OnCommitSelected"
+                                                 BranchSelected="CommitGraph_OnBranchSelected"/>
                 </ScrollViewer>
                 <Button Grid.Row="2" Content="{DynamicResource Action.LoadMore}"
                         Command="{Binding LoadMoreHistoryCommand}" HorizontalAlignment="Center"/>
@@ -211,21 +286,12 @@
 
             <GridSplitter Grid.Column="3" Width="5" HorizontalAlignment="Stretch"/>
 
-            <TabControl Grid.Column="4">
+            <TabControl Grid.Column="4"
+                        SelectedIndex="{Binding SelectedRightTabIndex, Mode=TwoWay}">
                 <TabItem Header="{DynamicResource Tab.Diff}">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="*"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-                        <TextBox Text="{Binding DiffText}" FontFamily="Cascadia Mono,Consolas"
-                                 FontSize="12" IsReadOnly="True" AcceptsReturn="True"
-                                 HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"/>
-                        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                            <Button Content="暂存所选代码块" Command="{Binding StageSelectedHunkCommand}"/>
-                            <Button Content="取消暂存代码块" Command="{Binding UnstageSelectedHunkCommand}"/>
-                        </StackPanel>
-                    </Grid>
+                    <TextBox Text="{Binding DiffText}" FontFamily="Cascadia Mono,Consolas"
+                             FontSize="12" IsReadOnly="True" AcceptsReturn="True"
+                             HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"/>
                 </TabItem>
                 <TabItem Header="{DynamicResource Tab.Editor}">
                     <Grid>
@@ -234,9 +300,16 @@
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
                         <DockPanel Margin="5">
+                            <Button DockPanel.Dock="Right" Content="保存并暂存"
+                                    Command="{Binding SaveAndStageEditorCommand}"
+                                    Visibility="{Binding CanSaveCurrentDocument, Converter={StaticResource BoolToVisibility}}"/>
                             <Button DockPanel.Dock="Right" Content="{DynamicResource Action.Save}"
                                     Command="{Binding SaveEditorCommand}"
                                     Visibility="{Binding CanSaveCurrentDocument, Converter={StaticResource BoolToVisibility}}"/>
+                            <TextBlock DockPanel.Dock="Right" Margin="8,0"
+                                       Text="未保存" Foreground="#E08A1E"
+                                       VerticalAlignment="Center"
+                                       Visibility="{Binding HasUnsavedEditorChanges, Converter={StaticResource BoolToVisibility}}"/>
                             <TextBlock Text="{Binding CurrentDocument.Path}" VerticalAlignment="Center"
                                        TextTrimming="CharacterEllipsis"
                                        ToolTip="{Binding CurrentDocument.Path}"/>
@@ -266,11 +339,12 @@
                                            FontSize="18" FontWeight="SemiBold"
                                            HorizontalAlignment="Center"/>
                                 <TextBlock Margin="0,10,0,18"
-                                           Text="DOCX、PDF、图片等文件不能在内置文本编辑器中直接编辑。请使用 Windows 默认程序打开。"
+                                           Text="{Binding ExternalDocumentHint}"
                                            TextWrapping="Wrap" TextAlignment="Center"
                                            Opacity="0.7"/>
                                 <Button Content="使用默认程序打开"
                                         Command="{Binding OpenCurrentDocumentExternallyCommand}"
+                                        Visibility="{Binding CanOpenCurrentDocumentExternally, Converter={StaticResource BoolToVisibility}}"
                                         HorizontalAlignment="Center"
                                         Padding="18,6"/>
                                 <TextBlock Margin="0,12,0,0"
@@ -293,51 +367,391 @@
                             <Button Content="从此提交创建分支" Click="CreateBranch_OnClick"/>
                             <Button Content="拣选此提交" Click="CherryPick_OnClick"/>
                             <Button Content="撤销此提交" Click="Revert_OnClick"/>
-                            <Button Content="Reset 到此提交…" Click="Reset_OnClick"/>
+                            <Button Content="将当前分支回退到此版本…" Click="Reset_OnClick"/>
                         </WrapPanel>
                     </Grid>
                 </TabItem>
                 <TabItem Header="冲突">
-                    <Grid>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
+                    <Grid Margin="10" MinHeight="500">
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="110"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="84"/>
                             <RowDefinition Height="*"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
-                        <ListBox ItemsSource="{Binding Conflicts}" DisplayMemberPath="Path"
-                                 SelectionChanged="ConflictList_OnSelectionChanged"/>
-                        <Grid Grid.Row="1">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <GroupBox Header="当前分支（Ours）">
-                                <TextBox Text="{Binding ConflictOursText}" IsReadOnly="True"
-                                         AcceptsReturn="True" FontFamily="Consolas"
-                                         VerticalScrollBarVisibility="Auto"/>
-                            </GroupBox>
-                            <GroupBox Grid.Column="1" Header="合并结果">
-                                <TextBox Text="{Binding ConflictResultText, UpdateSourceTrigger=PropertyChanged}"
-                                         AcceptsReturn="True" FontFamily="Consolas"
-                                         VerticalScrollBarVisibility="Auto"/>
-                            </GroupBox>
-                            <GroupBox Grid.Column="2" Header="对方分支（Theirs）">
-                                <TextBox Text="{Binding ConflictTheirsText}" IsReadOnly="True"
-                                         AcceptsReturn="True" FontFamily="Consolas"
-                                         VerticalScrollBarVisibility="Auto"/>
-                            </GroupBox>
+
+                        <Border Padding="12,9"
+                                Background="{StaticResource PanelBrush}"
+                                BorderBrush="{StaticResource SubtleBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6">
+                            <DockPanel>
+                                <Border DockPanel.Dock="Right"
+                                        Padding="9,3"
+                                        CornerRadius="10"
+                                        Background="#185B8CFF"
+                                        VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Conflicts.Count, StringFormat={}{0} 个待处理}"
+                                               Foreground="{StaticResource AccentBrush}"
+                                               FontSize="11"
+                                               FontWeight="SemiBold"/>
+                                </Border>
+                                <StackPanel>
+                                    <TextBlock Text="冲突解决器"
+                                               FontSize="15"
+                                               FontWeight="SemiBold"/>
+                                    <TextBlock Text="{Binding ConflictStatusText}"
+                                               Margin="0,3,12,0"
+                                               FontSize="11"
+                                               Opacity="0.62"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <Border Grid.Row="1"
+                                Margin="0,8,0,8"
+                                BorderBrush="{StaticResource SubtleBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="5">
+                            <Grid>
+                                <ListBox x:Name="ConflictList"
+                                         ItemsSource="{Binding Conflicts}"
+                                         SelectedItem="{Binding SelectedConflict, Mode=TwoWay}"
+                                         BorderThickness="0"
+                                         SelectionChanged="ConflictList_OnSelectionChanged">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <DockPanel Margin="2">
+                                                <Border x:Name="BinaryBadge"
+                                                        DockPanel.Dock="Right"
+                                                        Padding="6,2"
+                                                        CornerRadius="8"
+                                                        Background="#18E05D5D"
+                                                        Visibility="Collapsed">
+                                                    <TextBlock Text="二进制"
+                                                               FontSize="10"
+                                                               Foreground="{StaticResource DangerBrush}"/>
+                                                </Border>
+                                                <TextBlock Text="{Binding Path}"
+                                                           VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           ToolTip="{Binding Path}"/>
+                                            </DockPanel>
+                                            <DataTemplate.Triggers>
+                                                <DataTrigger Binding="{Binding IsBinary}" Value="True">
+                                                    <Setter TargetName="BinaryBadge" Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </DataTemplate.Triggers>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <TextBlock Text="没有待处理的冲突文件"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Opacity="0.5"
+                                           IsHitTestVisible="False">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Conflicts.Count}" Value="0">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                        </Border>
+
+                        <Grid Grid.Row="2">
+                            <Grid IsEnabled="{Binding HasSelectedConflict}">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="2*" MinHeight="70"/>
+                                    <RowDefinition Height="5"/>
+                                    <RowDefinition Height="3*" MinHeight="90"/>
+                                </Grid.RowDefinitions>
+
+                                <Border Padding="9,6"
+                                        Background="{StaticResource PanelBrush}"
+                                        CornerRadius="4">
+                                    <DockPanel>
+                                        <TextBlock DockPanel.Dock="Right"
+                                                   Text="选择版本后仍可在下方手工编辑"
+                                                   FontSize="10"
+                                                   Opacity="0.5"
+                                                   VerticalAlignment="Center"/>
+                                        <TextBlock Text="{Binding SelectedConflict.Path, TargetNullValue=未选择文件}"
+                                                   FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding SelectedConflict.Path}"/>
+                                    </DockPanel>
+                                </Border>
+
+                                <Expander Grid.Row="1"
+                                          Header="查看共同祖先版本（Base）"
+                                          Margin="0,5,0,5"
+                                          FontSize="11">
+                                    <TextBox Text="{Binding ConflictBaseText}"
+                                             MaxHeight="120"
+                                             IsReadOnly="True"
+                                             AcceptsReturn="True"
+                                             FontFamily="Consolas"
+                                             FontSize="11"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             VerticalScrollBarVisibility="Auto"/>
+                                </Expander>
+
+                                <Grid Grid.Row="2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="6"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <Border BorderBrush="{StaticResource SubtleBorderBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="5">
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="34"/>
+                                                <RowDefinition Height="*"/>
+                                            </Grid.RowDefinitions>
+                                            <Border Padding="9,0"
+                                                    Background="#125B8CFF"
+                                                    CornerRadius="4,4,0,0">
+                                                <DockPanel>
+                                                    <Border DockPanel.Dock="Right"
+                                                            Padding="6,2"
+                                                            CornerRadius="8"
+                                                            Background="#205B8CFF"
+                                                            VerticalAlignment="Center">
+                                                        <TextBlock Text="OURS"
+                                                                   FontSize="9"
+                                                                   Foreground="{StaticResource AccentBrush}"/>
+                                                    </Border>
+                                                    <TextBlock Text="当前版本"
+                                                               VerticalAlignment="Center"
+                                                               FontWeight="SemiBold"/>
+                                                </DockPanel>
+                                            </Border>
+                                            <TextBox Grid.Row="1"
+                                                     Text="{Binding ConflictOursText}"
+                                                     IsReadOnly="True"
+                                                     AcceptsReturn="True"
+                                                     AcceptsTab="True"
+                                                     FontFamily="Consolas"
+                                                     FontSize="11"
+                                                     BorderThickness="0"
+                                                     HorizontalScrollBarVisibility="Auto"
+                                                     VerticalScrollBarVisibility="Auto"/>
+                                        </Grid>
+                                    </Border>
+
+                                    <GridSplitter Grid.Column="1"
+                                                  Width="6"
+                                                  HorizontalAlignment="Stretch"
+                                                  Background="Transparent"/>
+
+                                    <Border Grid.Column="2"
+                                            BorderBrush="{StaticResource SubtleBorderBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="5">
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="34"/>
+                                                <RowDefinition Height="*"/>
+                                            </Grid.RowDefinitions>
+                                            <Border Padding="9,0"
+                                                    Background="#12F5A623"
+                                                    CornerRadius="4,4,0,0">
+                                                <DockPanel>
+                                                    <Border DockPanel.Dock="Right"
+                                                            Padding="6,2"
+                                                            CornerRadius="8"
+                                                            Background="#20F5A623"
+                                                            VerticalAlignment="Center">
+                                                        <TextBlock Text="THEIRS"
+                                                                   FontSize="9"
+                                                                   Foreground="{StaticResource WarningBrush}"/>
+                                                    </Border>
+                                                    <TextBlock Text="对方版本"
+                                                               VerticalAlignment="Center"
+                                                               FontWeight="SemiBold"/>
+                                                </DockPanel>
+                                            </Border>
+                                            <TextBox Grid.Row="1"
+                                                     Text="{Binding ConflictTheirsText}"
+                                                     IsReadOnly="True"
+                                                     AcceptsReturn="True"
+                                                     AcceptsTab="True"
+                                                     FontFamily="Consolas"
+                                                     FontSize="11"
+                                                     BorderThickness="0"
+                                                     HorizontalScrollBarVisibility="Auto"
+                                                     VerticalScrollBarVisibility="Auto"/>
+                                        </Grid>
+                                    </Border>
+                                </Grid>
+
+                                <GridSplitter Grid.Row="3"
+                                              Height="5"
+                                              HorizontalAlignment="Stretch"
+                                              VerticalAlignment="Stretch"
+                                              Background="Transparent"/>
+
+                                <Border Grid.Row="4"
+                                        BorderBrush="{StaticResource AccentBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="5">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="34"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="*"/>
+                                        </Grid.RowDefinitions>
+                                        <Border Padding="9,0"
+                                                Background="#125B8CFF"
+                                                CornerRadius="4,4,0,0">
+                                            <DockPanel>
+                                                <TextBlock DockPanel.Dock="Right"
+                                                           Text="可编辑"
+                                                           FontSize="10"
+                                                           Opacity="0.55"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Text="合并结果"
+                                                           FontWeight="SemiBold"
+                                                           VerticalAlignment="Center"/>
+                                            </DockPanel>
+                                        </Border>
+                                        <Grid Grid.Row="1" Margin="5,3">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Button Content="采用当前"
+                                                    Padding="5,3"
+                                                    MinHeight="28"
+                                                    Click="UseOurs_OnClick"/>
+                                            <Button Grid.Column="1"
+                                                    Content="采用对方"
+                                                    Padding="5,3"
+                                                    MinHeight="28"
+                                                    Click="UseTheirs_OnClick"/>
+                                            <Button Grid.Column="2"
+                                                    Content="合并两者"
+                                                    Padding="5,3"
+                                                    MinHeight="28"
+                                                    Click="UseBoth_OnClick"/>
+                                        </Grid>
+                                        <TextBox Grid.Row="2"
+                                                 Text="{Binding ConflictResultText, UpdateSourceTrigger=PropertyChanged}"
+                                                 AcceptsReturn="True"
+                                                 AcceptsTab="True"
+                                                 FontFamily="Consolas"
+                                                 FontSize="11"
+                                                 BorderThickness="0"
+                                                 HorizontalScrollBarVisibility="Auto"
+                                                 VerticalScrollBarVisibility="Auto"
+                                                 ToolTip="确认内容正确后，在下方标记为已解决"/>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+
+                            <Border Padding="24"
+                                    Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+                                    BorderBrush="{StaticResource SubtleBorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="5"
+                                    IsHitTestVisible="False">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasSelectedConflict}" Value="True">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <TextBlock Text="✓"
+                                               HorizontalAlignment="Center"
+                                               FontSize="28"
+                                               Foreground="{StaticResource SuccessBrush}"/>
+                                    <TextBlock Text="没有需要编辑的冲突"
+                                               Margin="0,8,0,0"
+                                               HorizontalAlignment="Center"
+                                               FontWeight="SemiBold"/>
+                                    <TextBlock Text="出现冲突时，请先从上方选择一个文件。"
+                                               Margin="0,4,0,0"
+                                               TextAlignment="Center"
+                                               FontSize="11"
+                                               Opacity="0.55"/>
+                                </StackPanel>
+                            </Border>
                         </Grid>
-                        <WrapPanel Grid.Row="2" HorizontalAlignment="Right">
-                            <Button Content="使用当前版本" Click="UseOurs_OnClick"/>
-                            <Button Content="使用对方版本" Click="UseTheirs_OnClick"/>
-                            <Button Content="两者都保留" Click="UseBoth_OnClick"/>
-                            <Button Content="标记为已解决" Click="ResolveConflict_OnClick"/>
-                            <Separator Margin="6,4"/>
-                            <Button Content="继续操作" Click="ContinueOperation_OnClick"/>
-                            <Button Content="中止操作" Click="AbortOperation_OnClick"/>
-                        </WrapPanel>
+
+                        <Border Grid.Row="3"
+                                Margin="0,9,0,0"
+                                Padding="8"
+                                Background="{StaticResource PanelBrush}"
+                                BorderBrush="{StaticResource SubtleBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="完成当前文件"
+                                                   FontWeight="SemiBold"/>
+                                        <TextBlock Text="保存合并结果并加入暂存区"
+                                                   Margin="0,2,12,0"
+                                                   FontSize="10"
+                                                   Opacity="0.55"/>
+                                    </StackPanel>
+                                    <Button Grid.Column="1"
+                                            Content="标记为已解决"
+                                            Padding="13,5"
+                                            Background="{StaticResource AccentBrush}"
+                                            Foreground="White"
+                                            BorderThickness="0"
+                                            IsEnabled="{Binding HasSelectedConflict}"
+                                            Click="ResolveConflict_OnClick"/>
+                                </Grid>
+                                <Grid Grid.Row="1" Margin="0,7,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Button Content="继续 Git 操作"
+                                            IsEnabled="{Binding CanContinueOperation}"
+                                            ToolTip="所有冲突解决后继续合并、变基或拣选操作"
+                                            Click="ContinueOperation_OnClick"/>
+                                    <Button Grid.Column="1"
+                                            Content="中止 Git 操作"
+                                            Foreground="{StaticResource DangerBrush}"
+                                            IsEnabled="{Binding CanAbortOperation}"
+                                            ToolTip="放弃当前操作并恢复到操作前状态"
+                                            Click="AbortOperation_OnClick"/>
+                                </Grid>
+                            </Grid>
+                        </Border>
                     </Grid>
+                    </ScrollViewer>
                 </TabItem>
                 <TabItem Header="{DynamicResource Tab.Log}">
                     <Grid>
@@ -357,6 +771,10 @@
                                         </DockPanel>
                                         <TextBlock Text="{Binding EquivalentCommand}" FontFamily="Consolas"
                                                    FontSize="10" Opacity="0.6"/>
+                                        <TextBlock Text="{Binding DetailsText}"
+                                                   FontSize="10"
+                                                   Foreground="#C62828"
+                                                   TextWrapping="Wrap"/>
                                     </StackPanel>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
@@ -383,13 +801,15 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
                     <DockPanel Margin="8,3">
-                        <Button DockPanel.Dock="Right" Content="全部暂存" Command="{Binding StageAllCommand}"/>
+                        <Button DockPanel.Dock="Right" Content="全部暂存" Command="{Binding StageAllCommand}"
+                                ToolTip="若编辑器有未保存内容，将先保存再暂存"/>
                         <TextBlock Text="{DynamicResource Section.Unstaged}" FontWeight="SemiBold"
                                    VerticalAlignment="Center"/>
                     </DockPanel>
                     <ListBox x:Name="UnstagedList" Grid.Row="1" ItemsSource="{Binding UnstagedChanges}"
                              ItemTemplate="{StaticResource ChangeTemplate}"
                              SelectionChanged="ChangeList_OnSelectionChanged"
+                             PreviewMouseLeftButtonDown="ChangeList_OnPreviewMouseLeftButtonDown"
                              PreviewMouseMove="ChangeList_OnPreviewMouseMove"
                              AllowDrop="True" Drop="UnstagedList_OnDrop"/>
                 </Grid>
@@ -406,6 +826,7 @@
                     <ListBox x:Name="StagedList" Grid.Row="1" ItemsSource="{Binding StagedChanges}"
                              ItemTemplate="{StaticResource ChangeTemplate}"
                              SelectionChanged="ChangeList_OnSelectionChanged"
+                             PreviewMouseLeftButtonDown="ChangeList_OnPreviewMouseLeftButtonDown"
                              PreviewMouseMove="ChangeList_OnPreviewMouseMove"
                              AllowDrop="True" Drop="StagedList_OnDrop"/>
                 </Grid>
@@ -442,5 +863,145 @@
                 </ItemsControl>
             </StatusBarItem>
         </StatusBar>
+
+        <Grid x:Name="CloneOverlay"
+              Grid.RowSpan="4"
+              Panel.ZIndex="1000"
+              Background="#66000000"
+              Visibility="{Binding IsCloning, Converter={StaticResource BoolToVisibility}}">
+            <Border Width="560"
+                    MaxWidth="560"
+                    Padding="30,26"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+                    BorderBrush="{StaticResource AccentBrush}"
+                    BorderThickness="2"
+                    CornerRadius="14">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="28"
+                                      ShadowDepth="5"
+                                      Opacity="0.38"/>
+                </Border.Effect>
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal"
+                                HorizontalAlignment="Center">
+                        <Ellipse Width="11" Height="11"
+                                 Margin="0,0,10,0"
+                                 VerticalAlignment="Center"
+                                 Fill="{StaticResource AccentBrush}">
+                            <Ellipse.Triggers>
+                                <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                    <BeginStoryboard>
+                                        <Storyboard RepeatBehavior="Forever"
+                                                    AutoReverse="True">
+                                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                             From="1" To="0.2"
+                                                             Duration="0:0:0.45"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </EventTrigger>
+                            </Ellipse.Triggers>
+                        </Ellipse>
+                        <TextBlock x:Name="CloneTitleText"
+                                   Text="正在克隆远程仓库"
+                                   FontSize="22"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <TextBlock Margin="0,12,0,18"
+                               Text="正在下载提交、分支和文件，请稍候…"
+                               FontSize="13"
+                               Opacity="0.68"
+                               HorizontalAlignment="Center"/>
+                    <ProgressBar x:Name="CloneProgressBar"
+                                 Height="9"
+                                 IsIndeterminate="True"
+                                 Foreground="{StaticResource AccentBrush}"/>
+                    <TextBlock Margin="0,16,0,0"
+                               Text="克隆到"
+                               FontSize="11"
+                               Opacity="0.58"/>
+                    <TextBlock x:Name="CloneDestinationText"
+                               Margin="0,5,0,0"
+                               Text="{Binding CloneDestinationPath}"
+                               FontSize="13"
+                               FontWeight="Medium"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center"
+                               ToolTip="{Binding CloneDestinationPath}"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Grid x:Name="PullOverlay"
+              Grid.RowSpan="4"
+              Panel.ZIndex="1000"
+              Background="#66000000"
+              Visibility="{Binding IsPulling, Converter={StaticResource BoolToVisibility}}">
+            <Border Width="560"
+                    MaxWidth="560"
+                    Padding="30,26"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+                    BorderBrush="{StaticResource AccentBrush}"
+                    BorderThickness="2"
+                    CornerRadius="14">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="28"
+                                      ShadowDepth="5"
+                                      Opacity="0.38"/>
+                </Border.Effect>
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal"
+                                HorizontalAlignment="Center">
+                        <Ellipse Width="11" Height="11"
+                                 Margin="0,0,10,0"
+                                 VerticalAlignment="Center"
+                                 Fill="{StaticResource AccentBrush}">
+                            <Ellipse.Triggers>
+                                <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                    <BeginStoryboard>
+                                        <Storyboard RepeatBehavior="Forever"
+                                                    AutoReverse="True">
+                                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                             From="1" To="0.2"
+                                                             Duration="0:0:0.45"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </EventTrigger>
+                            </Ellipse.Triggers>
+                        </Ellipse>
+                        <TextBlock Text="正在拉取远程更新"
+                                   FontSize="22"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <TextBlock Margin="0,12,0,18"
+                               Text="正在获取远程提交并更新当前分支，请稍候…"
+                               FontSize="13"
+                               Opacity="0.68"
+                               HorizontalAlignment="Center"/>
+                    <ProgressBar x:Name="PullProgressBar"
+                                 Height="9"
+                                 IsIndeterminate="True"
+                                 Foreground="{StaticResource AccentBrush}"/>
+                    <TextBlock Margin="0,16,0,0"
+                               Text="更新方向"
+                               FontSize="11"
+                               Opacity="0.58"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="PullSourceText"
+                               Margin="0,5,0,0"
+                               Text="{Binding PullSourceText}"
+                               FontSize="13"
+                               FontWeight="Medium"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center"
+                               ToolTip="{Binding PullSourceText}"/>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

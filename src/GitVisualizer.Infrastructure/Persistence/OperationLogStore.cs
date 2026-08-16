@@ -1,5 +1,6 @@
 using GitVisualizer.Core;
 using Microsoft.Data.Sqlite;
+using System.Text.Json;
 
 namespace GitVisualizer.Infrastructure.Persistence;
 
@@ -31,12 +32,41 @@ public sealed class OperationLogStore : IOperationLogStore
                     summary TEXT NOT NULL,
                     equivalent_command TEXT NOT NULL,
                     recovery_point_id TEXT NULL,
-                    error_code TEXT NULL
+                    error_code TEXT NULL,
+                    details_json TEXT NOT NULL DEFAULT '[]'
                 );
                 CREATE INDEX IF NOT EXISTS ix_operation_log_repo_time
                     ON operation_log(repository_path, timestamp DESC);
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            var hasDetailsColumn = false;
+            var schemaCommand = connection.CreateCommand();
+            schemaCommand.CommandText = "PRAGMA table_info(operation_log);";
+            await using (var reader = await schemaCommand.ExecuteReaderAsync(cancellationToken)
+                             .ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    if (string.Equals(
+                            reader.GetString(reader.GetOrdinal("name")),
+                            "details_json",
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasDetailsColumn = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!hasDetailsColumn)
+            {
+                var migrationCommand = connection.CreateCommand();
+                migrationCommand.CommandText =
+                    "ALTER TABLE operation_log ADD COLUMN details_json TEXT NOT NULL DEFAULT '[]';";
+                await migrationCommand.ExecuteNonQueryAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -57,10 +87,10 @@ public sealed class OperationLogStore : IOperationLogStore
                 """
                 INSERT OR REPLACE INTO operation_log
                 (id, timestamp, repository_path, operation, success, risk, summary,
-                 equivalent_command, recovery_point_id, error_code)
+                 equivalent_command, recovery_point_id, error_code, details_json)
                 VALUES
                 ($id, $timestamp, $repository, $operation, $success, $risk, $summary,
-                 $command, $recovery, $error);
+                 $command, $recovery, $error, $details);
                 """;
             command.Parameters.AddWithValue("$id", entry.Id);
             command.Parameters.AddWithValue("$timestamp", entry.Timestamp.ToString("O"));
@@ -72,6 +102,10 @@ public sealed class OperationLogStore : IOperationLogStore
             command.Parameters.AddWithValue("$command", Redact(entry.EquivalentCommand));
             command.Parameters.AddWithValue("$recovery", (object?)entry.RecoveryPointId ?? DBNull.Value);
             command.Parameters.AddWithValue("$error", (object?)entry.ErrorCode ?? DBNull.Value);
+            command.Parameters.AddWithValue(
+                "$details",
+                JsonSerializer.Serialize(
+                    (entry.Details ?? []).Select(Redact).ToArray()));
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -117,7 +151,9 @@ public sealed class OperationLogStore : IOperationLogStore
                         : reader.GetString(reader.GetOrdinal("recovery_point_id")),
                     reader.IsDBNull(reader.GetOrdinal("error_code"))
                         ? null
-                        : reader.GetString(reader.GetOrdinal("error_code"))));
+                        : reader.GetString(reader.GetOrdinal("error_code")),
+                    JsonSerializer.Deserialize<string[]>(
+                        reader.GetString(reader.GetOrdinal("details_json"))) ?? []));
             }
 
             return entries;

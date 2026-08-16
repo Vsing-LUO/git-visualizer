@@ -21,13 +21,29 @@ dotnet run --project src/GitVisualizer.App
 & "$env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" run --project src/GitVisualizer.App
 ```
 
+## 发布可直接双击的 Windows 版本
+
+使用自包含发布配置生成 Windows x64 单文件版本，目标电脑不需要另外安装 .NET：
+
+```powershell
+& "$env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" publish `
+  src/GitVisualizer.App/GitVisualizer.App.csproj `
+  -p:PublishProfile=win-x64-self-contained
+```
+
+发布完成后直接双击：
+
+```text
+artifacts\publish\win-x64\GitVisualizer.exe
+```
+
 ## V1 功能
 
 - 打开、初始化和克隆仓库
 - 工作区状态、文件与差异块暂存
 - 提交、分支、标签、stash 和提交关系图
 - merge、rebase、cherry-pick、revert、reset
-- HTTPS/SSH 远程同步
+- HTTPS/SSH 远程同步、推送目标选择、远程配置管理和推送过程监视
 - 冲突查看与安全恢复点
 - 内置轻量文本编辑器和常用文件操作
 

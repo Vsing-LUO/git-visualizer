@@ -48,8 +48,8 @@ public partial class App : Application
         services.AddSingleton<ICredentialVault, WindowsCredentialVault>();
         services.AddSingleton<IRepositoryWatcherFactory, RepositoryWatcherFactory>();
         services.AddSingleton<IFileWorkspaceService, FileWorkspaceService>();
+        services.AddSingleton<ISystemNewFileService, WindowsShellNewFileService>();
         services.AddSingleton<IDiffService, LibGitDiffService>();
-        services.AddSingleton<IIndexPatchService, LibGitIndexPatchService>();
         services.AddSingleton<IGitRepositoryService, LibGitRepositoryService>();
         services.AddSingleton<MainWindowViewModel>();
         services.AddSingleton<MainWindow>();

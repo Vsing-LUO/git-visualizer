@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using GitVisualizer.Core;
 using LibGit2Sharp;
 
@@ -7,20 +5,6 @@ namespace GitVisualizer.Infrastructure.Git;
 
 public sealed class LibGitDiffService : IDiffService
 {
-    public Task<IReadOnlyList<DiffHunk>> GetWorkingDiffAsync(
-        string repositoryPath,
-        string path,
-        bool staged,
-        CancellationToken cancellationToken = default) =>
-        Task.Run<IReadOnlyList<DiffHunk>>(() =>
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            using var repository = new Repository(repositoryPath);
-            var patch = GetPatch(repository, path, staged);
-            var snapshot = ComputeSnapshot(repository, path);
-            return UnifiedDiffParser.Parse(path, patch, staged, snapshot);
-        }, cancellationToken);
-
     public Task<string> GetUnifiedDiffAsync(
         string repositoryPath,
         string path,
@@ -30,7 +14,8 @@ public sealed class LibGitDiffService : IDiffService
         {
             cancellationToken.ThrowIfCancellationRequested();
             using var repository = new Repository(repositoryPath);
-            return GetPatch(repository, path, staged);
+            var patch = GetPatch(repository, path, staged);
+            return GitPatchDisplayFormatter.Format(patch, path, staged);
         }, cancellationToken);
 
     public Task<string> CompareCommitsAsync(
@@ -65,27 +50,5 @@ public sealed class LibGitDiffService : IDiffService
             patch = repository.Diff.Compare<Patch>(paths, true);
         }
         return patch.Content;
-    }
-
-    internal static string ComputeSnapshot(Repository repository, string path)
-    {
-        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        var indexEntry = repository.Index[path];
-        if (indexEntry is not null)
-        {
-            hash.AppendData(Encoding.UTF8.GetBytes(indexEntry.Id.Sha));
-        }
-        var fullPath = Path.Combine(repository.Info.WorkingDirectory, path);
-        if (File.Exists(fullPath))
-        {
-            using var stream = File.OpenRead(fullPath);
-            Span<byte> buffer = stackalloc byte[8192];
-            int read;
-            while ((read = stream.Read(buffer)) > 0)
-            {
-                hash.AppendData(buffer[..read]);
-            }
-        }
-        return Convert.ToHexString(hash.GetHashAndReset());
     }
 }
