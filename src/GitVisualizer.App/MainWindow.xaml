@@ -40,7 +40,8 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="48"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="250"/>
+            <RowDefinition Height="6"/>
+            <RowDefinition Height="244" MinHeight="94" MaxHeight="244"/>
             <RowDefinition Height="28"/>
         </Grid.RowDefinitions>
 
@@ -820,7 +821,17 @@
             </TabControl>
         </Grid>
 
-        <Border Grid.Row="3" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="0,1,0,0">
+        <GridSplitter Grid.Row="3"
+                      Height="6"
+                      HorizontalAlignment="Stretch"
+                      VerticalAlignment="Stretch"
+                      ResizeDirection="Rows"
+                      ResizeBehavior="PreviousAndNext"
+                      Cursor="SizeNS"
+                      Background="{StaticResource SubtleBorderBrush}"
+                      ToolTip="上下拖动可调整暂存功能区高度"/>
+
+        <Border Grid.Row="4" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="0,1,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
@@ -880,7 +891,7 @@
             </Grid>
         </Border>
 
-        <StatusBar Grid.Row="4">
+        <StatusBar Grid.Row="5">
             <StatusBarItem>
                 <TextBlock Text="{Binding StatusText}"/>
             </StatusBarItem>
@@ -897,7 +908,7 @@
         </StatusBar>
 
         <Grid x:Name="CloneOverlay"
-              Grid.RowSpan="5"
+              Grid.RowSpan="6"
               Panel.ZIndex="1000"
               Background="#66000000"
               Visibility="{Binding IsCloning, Converter={StaticResource BoolToVisibility}}">
@@ -967,7 +978,7 @@
         </Grid>
 
         <Grid x:Name="PullOverlay"
-              Grid.RowSpan="5"
+              Grid.RowSpan="6"
               Panel.ZIndex="1000"
               Background="#66000000"
               Visibility="{Binding IsPulling, Converter={StaticResource BoolToVisibility}}">
