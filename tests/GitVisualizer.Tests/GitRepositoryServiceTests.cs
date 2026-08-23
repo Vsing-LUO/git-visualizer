@@ -614,6 +614,14 @@ public sealed class GitRepositoryServiceTests
         Assert.False(blocked.Success);
         Assert.Contains("二进制", blocked.ErrorMessage);
         Assert.Equal(before, await File.ReadAllBytesAsync(path));
+
+        var resolved = await service.ResolveBinaryConflictAsync(
+            temporary.Path, "asset.bin", ConflictSide.Ours);
+
+        Assert.True(resolved.Success, resolved.ErrorMessage);
+        Assert.Equal(new byte[] { 0, 4, 2 }, await File.ReadAllBytesAsync(path));
+        Assert.Empty(await service.GetConflictsAsync(temporary.Path));
+        Assert.NotNull(resolved.RecoveryPointId);
     }
 
     [Fact]

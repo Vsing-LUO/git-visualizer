@@ -106,6 +106,9 @@ public interface IGitRepositoryService
     Task<GitOperationResult> ResolveConflictAsync(
         string repositoryPath, string path, string resultText,
         CancellationToken cancellationToken = default);
+    Task<GitOperationResult> ResolveBinaryConflictAsync(
+        string repositoryPath, string path, ConflictSide side,
+        CancellationToken cancellationToken = default);
     Task<GitOperationResult> ContinueOperationAsync(
         string repositoryPath, GitIdentity? identity = null,
         CancellationToken cancellationToken = default);
@@ -116,11 +119,24 @@ public interface IGitRepositoryService
 
 public interface IDiffService
 {
+    Task<IReadOnlyList<DiffHunk>> GetWorkingDiffAsync(
+        string repositoryPath, string path, bool staged,
+        CancellationToken cancellationToken = default);
     Task<string> GetUnifiedDiffAsync(
         string repositoryPath, string path, bool staged,
         CancellationToken cancellationToken = default);
     Task<string> CompareCommitsAsync(
         string repositoryPath, string oldCommitId, string newCommitId, string? path = null,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IIndexPatchService
+{
+    Task<GitOperationResult> StageHunksAsync(
+        string repositoryPath, string path, IReadOnlyList<DiffHunk> hunks,
+        CancellationToken cancellationToken = default);
+    Task<GitOperationResult> UnstageHunksAsync(
+        string repositoryPath, string path, IReadOnlyList<DiffHunk> hunks,
         CancellationToken cancellationToken = default);
 }
 

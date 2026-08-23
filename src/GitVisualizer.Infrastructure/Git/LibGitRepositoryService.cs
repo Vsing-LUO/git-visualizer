@@ -1248,6 +1248,109 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             }, cancellationToken: cancellationToken);
     }
 
+    public Task<GitOperationResult> ResolveBinaryConflictAsync(
+        string repositoryPath, string path, ConflictSide side,
+        CancellationToken cancellationToken = default)
+    {
+        if (side is not (ConflictSide.Ours or ConflictSide.Theirs or ConflictSide.CurrentFile))
+        {
+            return Task.FromResult(GitOperationResult.Fail(
+                "binary-conflict-resolve", "git add -- <path>",
+                new ArgumentException("二进制冲突只能采用当前版本、对方版本或工作区文件。", nameof(side))));
+        }
+        var command = side switch
+        {
+            ConflictSide.Ours => $"git checkout --ours -- {GitServiceSupport.Quote(path)} && git add -- {GitServiceSupport.Quote(path)}",
+            ConflictSide.Theirs => $"git checkout --theirs -- {GitServiceSupport.Quote(path)} && git add -- {GitServiceSupport.Quote(path)}",
+            _ => $"git add -- {GitServiceSupport.Quote(path)}"
+        };
+        return ExecuteWriteAsync(
+            repositoryPath, "binary-conflict-resolve", command,
+            GitOperationRisk.Caution, true, [path], repository =>
+            {
+                var conflict = repository.Index.Conflicts.FirstOrDefault(item =>
+                    string.Equals(
+                        item.Ours?.Path ?? item.Theirs?.Path ?? item.Ancestor?.Path,
+                        path,
+                        StringComparison.Ordinal));
+                if (conflict is null)
+                {
+                    throw new InvalidOperationException("该文件当前不在冲突索引中。");
+                }
+                var isBinary = IsBinary(ReadBlobBytes(repository, conflict.Ancestor)) ||
+                               IsBinary(ReadBlobBytes(repository, conflict.Ours)) ||
+                               IsBinary(ReadBlobBytes(repository, conflict.Theirs));
+                if (!isBinary)
+                {
+                    throw new InvalidOperationException("该冲突不是二进制冲突，请使用文本解决器。");
+                }
+
+                var normalizedRoot = Path.GetFullPath(repository.Info.WorkingDirectory)
+                    .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                var fullPath = Path.GetFullPath(Path.Combine(repository.Info.WorkingDirectory, path));
+                if (!fullPath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new ArgumentException("冲突文件路径越出仓库工作区。", nameof(path));
+                }
+
+                IndexEntry? selectedEntry = side switch
+                {
+                    ConflictSide.Ours => conflict.Ours,
+                    ConflictSide.Theirs => conflict.Theirs,
+                    _ => null
+                };
+                if (side == ConflictSide.CurrentFile)
+                {
+                    if (!File.Exists(fullPath))
+                    {
+                        throw new FileNotFoundException("工作区文件不存在，不能采用当前文件。", fullPath);
+                    }
+                }
+                else if (selectedEntry is null)
+                {
+                    File.Delete(fullPath);
+                }
+                else
+                {
+                    var selectedBytes = ReadBlobBytes(repository, selectedEntry);
+                    Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+                    var temporaryPath = fullPath + $".resolve-{Guid.NewGuid():N}.tmp";
+                    try
+                    {
+                        File.WriteAllBytes(temporaryPath, selectedBytes);
+                        File.Move(temporaryPath, fullPath, true);
+                    }
+                    finally
+                    {
+                        if (File.Exists(temporaryPath))
+                        {
+                            File.Delete(temporaryPath);
+                        }
+                    }
+                }
+                Commands.Stage(repository, path);
+                if (repository.Index.Conflicts.Any(item =>
+                        string.Equals(
+                            item.Ours?.Path ?? item.Theirs?.Path ?? item.Ancestor?.Path,
+                            path,
+                            StringComparison.Ordinal)))
+                {
+                    throw new InvalidOperationException("Git 未能从冲突索引中移除该文件。");
+                }
+                var sourceName = side switch
+                {
+                    ConflictSide.Ours => "当前版本（ours）",
+                    ConflictSide.Theirs => "对方版本（theirs）",
+                    _ => "当前工作区文件"
+                };
+                return GitOperationResult.Ok(
+                    "binary-conflict-resolve",
+                    $"已按原始字节采用{sourceName}并解决 {path}",
+                    command,
+                    [$"来源：{sourceName}", "未进行任何文本编码或转换"]);
+            }, cancellationToken: cancellationToken);
+    }
+
     public Task<GitOperationResult> ContinueOperationAsync(
         string repositoryPath, GitIdentity? identity = null,
         CancellationToken cancellationToken = default)

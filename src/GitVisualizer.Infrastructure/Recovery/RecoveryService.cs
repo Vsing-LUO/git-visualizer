@@ -40,16 +40,14 @@ public sealed class RecoveryService : IRecoveryService
             }
 
             var archivePath = Path.Combine(LocalPaths.RecoveryDirectory, id + ".zip");
-            var paths = affectedPaths is { Count: > 0 }
-                ? affectedPaths
-                : repository.RetrieveStatus(new StatusOptions
-                {
-                    IncludeUntracked = true,
-                    RecurseUntrackedDirs = true
-                })
-                    .Select(x => x.FilePath)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToArray();
+            var changedPaths = repository.RetrieveStatus(new StatusOptions
+            {
+                IncludeUntracked = true,
+                RecurseUntrackedDirs = true
+            }).Select(entry => entry.FilePath);
+            var paths = (affectedPaths ?? []).Concat(changedPaths)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
 
             var manifest = new RecoveryManifest(
                 id, repositoryPath, operation, headId, reference, DateTimeOffset.UtcNow, paths);
@@ -109,6 +107,29 @@ public sealed class RecoveryService : IRecoveryService
         RecoveryPoint point,
         CancellationToken cancellationToken = default)
     {
+        if (!File.Exists(point.ArchivePath))
+        {
+            return GitOperationResult.Fail(
+                "restore", "git switch -c recovered/<time> <saved-head>",
+                new FileNotFoundException("恢复归档不存在。", point.ArchivePath));
+        }
+
+        // Keep the selected archive from being the oldest item pruned while the
+        // mandatory pre-restore safety point is created.
+        File.SetLastWriteTimeUtc(point.ArchivePath, DateTime.UtcNow);
+        RecoveryPoint? beforeRestore = null;
+        try
+        {
+            beforeRestore = await CreateAsync(
+                point.RepositoryPath, "before-recovery-restore", null, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            return GitOperationResult.Fail(
+                "restore", "create recovery point before restore", exception);
+        }
+
         await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -116,42 +137,121 @@ public sealed class RecoveryService : IRecoveryService
             {
                 throw new FileNotFoundException("恢复归档不存在。", point.ArchivePath);
             }
-
-            using var repository = new Repository(point.RepositoryPath);
-            var branchName = $"recovered/{point.CreatedAt:yyyyMMdd-HHmmss}";
-            if (!string.IsNullOrWhiteSpace(point.HeadId) && repository.Branches[branchName] is null)
+            RecoveryManifest manifest;
+            using (var manifestArchive = ZipFile.OpenRead(point.ArchivePath))
             {
-                var commit = repository.Lookup<Commit>(point.HeadId);
-                if (commit is not null)
+                var manifestEntry = manifestArchive.GetEntry("manifest.json")
+                                    ?? throw new InvalidDataException("恢复归档缺少清单。");
+                using var manifestStream = manifestEntry.Open();
+                manifest = await JsonSerializer.DeserializeAsync<RecoveryManifest>(
+                               manifestStream, JsonOptions, cancellationToken).ConfigureAwait(false)
+                           ?? throw new InvalidDataException("恢复归档清单无效。");
+            }
+            if (!Path.GetFullPath(manifest.RepositoryPath).Equals(
+                    Path.GetFullPath(point.RepositoryPath), StringComparison.OrdinalIgnoreCase) ||
+                !manifest.Id.Equals(point.Id, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("恢复归档与所选恢复点不匹配。");
+            }
+            if (string.IsNullOrWhiteSpace(manifest.HeadId))
+            {
+                throw new InvalidOperationException("该恢复点没有基准提交，无法创建安全恢复分支。");
+            }
+
+            string branchName;
+            string workingDirectory;
+            string indexPath;
+            using (var repository = new Repository(point.RepositoryPath))
+            {
+                if (repository.Info.CurrentOperation != CurrentOperation.None)
                 {
-                    repository.CreateBranch(branchName, commit);
+                    throw new InvalidOperationException("仓库有尚未结束的 Git 操作，请先继续或中止后再恢复。");
                 }
+                var commit = repository.Lookup<Commit>(manifest.HeadId)
+                             ?? throw new InvalidDataException("恢复点引用的提交不存在。");
+                branchName = NextRecoveryBranchName(repository, point.CreatedAt);
+                var branch = repository.CreateBranch(branchName, commit);
+                Commands.Checkout(repository, branch, new CheckoutOptions
+                {
+                    CheckoutModifiers = CheckoutModifiers.Force
+                });
+                workingDirectory = repository.Info.WorkingDirectory;
+                indexPath = Path.Combine(repository.Info.Path, "index");
             }
 
             using var archive = ZipFile.OpenRead(point.ArchivePath);
-            foreach (var entry in archive.Entries.Where(x => x.FullName.StartsWith("files/", StringComparison.Ordinal)))
+            var archivedFiles = archive.Entries
+                .Where(entry => entry.FullName.StartsWith("files/", StringComparison.Ordinal) &&
+                                !entry.FullName.EndsWith("/", StringComparison.Ordinal))
+                .ToDictionary(
+                    entry => entry.FullName["files/".Length..].Replace('/', Path.DirectorySeparatorChar),
+                    StringComparer.OrdinalIgnoreCase);
+
+            foreach (var relativePath in manifest.AffectedPaths)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var relative = entry.FullName["files/".Length..].Replace('/', Path.DirectorySeparatorChar);
-                var destination = Path.GetFullPath(Path.Combine(repository.Info.WorkingDirectory, relative));
-                if (!IsWithin(repository.Info.WorkingDirectory, destination))
+                var normalized = relativePath.Replace('/', Path.DirectorySeparatorChar);
+                var destination = SafeDestination(workingDirectory, normalized);
+                if (!archivedFiles.ContainsKey(normalized) && File.Exists(destination))
                 {
-                    throw new InvalidDataException("恢复归档包含越界路径。");
+                    File.Delete(destination);
                 }
+            }
 
+            foreach (var (relative, entry) in archivedFiles)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var destination = SafeDestination(workingDirectory, relative);
                 Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
                 entry.ExtractToFile(destination, true);
             }
 
+            var savedIndex = archive.GetEntry("git-index")
+                             ?? throw new InvalidDataException("恢复归档缺少暂存区快照。");
+            var temporaryIndex = indexPath + $".restore-{Guid.NewGuid():N}.tmp";
+            try
+            {
+                await using (var source = savedIndex.Open())
+                await using (var destination = File.Create(temporaryIndex))
+                {
+                    await source.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
+                    await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
+                }
+                File.Move(temporaryIndex, indexPath, true);
+            }
+            finally
+            {
+                if (File.Exists(temporaryIndex))
+                {
+                    File.Delete(temporaryIndex);
+                }
+            }
+
+            using (var validationRepository = new Repository(point.RepositoryPath))
+            {
+                _ = validationRepository.RetrieveStatus();
+            }
+
             return GitOperationResult.Ok(
                 "restore",
-                $"已恢复工作区文件，并创建分支 {branchName}",
-                $"git branch {branchName} {point.HeadId}",
-                [$"恢复点：{point.Id}", $"安全分支：{branchName}"]);
+                $"已在分支 {branchName} 恢复工作区和暂存区",
+                $"git switch -c {branchName} {point.HeadId}",
+                [
+                    $"已恢复：{point.Id}",
+                    $"当前分支：{branchName}",
+                    $"恢复前保护点：{beforeRestore.Id}"
+                ],
+                recoveryPointId: beforeRestore.Id);
         }
         catch (Exception exception)
         {
-            return GitOperationResult.Fail("restore", "git branch <recovery-branch> <saved-head>", exception);
+            return GitOperationResult.Fail(
+                       "restore", "git switch -c recovered/<time> <saved-head>", exception)
+                   with
+                   {
+                       RecoveryPointId = beforeRestore.Id,
+                       Details = [exception.Message, $"恢复前保护点：{beforeRestore.Id}"]
+                   };
         }
         finally
         {
@@ -253,6 +353,31 @@ public sealed class RecoveryService : IRecoveryService
         var normalizedRoot = Path.GetFullPath(root)
             .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         return path.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string SafeDestination(string workingDirectory, string relativePath)
+    {
+        if (Path.IsPathRooted(relativePath))
+        {
+            throw new InvalidDataException("恢复归档包含绝对路径。");
+        }
+        var destination = Path.GetFullPath(Path.Combine(workingDirectory, relativePath));
+        if (!IsWithin(workingDirectory, destination))
+        {
+            throw new InvalidDataException("恢复归档包含越界路径。");
+        }
+        return destination;
+    }
+
+    private static string NextRecoveryBranchName(Repository repository, DateTimeOffset createdAt)
+    {
+        var baseName = $"recovered/{createdAt:yyyyMMdd-HHmmss}";
+        var name = baseName;
+        for (var suffix = 2; repository.Branches[name] is not null; suffix++)
+        {
+            name = $"{baseName}-{suffix}";
+        }
+        return name;
     }
 
     private sealed record RecoveryManifest(

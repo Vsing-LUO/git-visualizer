@@ -26,6 +26,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private readonly IGitRepositoryService git;
     private readonly IDiffService diff;
+    private readonly IIndexPatchService? indexPatch;
     private readonly IRepositoryWatcherFactory watcherFactory;
     private readonly IFileWorkspaceService files;
     private readonly ISystemNewFileService systemNewFiles;
@@ -56,7 +57,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         ISettingsStore settingsStore,
         IOperationLogStore logStore,
         IRecoveryService recoveryService,
-        ICredentialVault credentialVault)
+        ICredentialVault credentialVault,
+        IIndexPatchService? indexPatch = null)
     {
         this.git = git;
         this.diff = diff;
@@ -67,6 +69,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         this.logStore = logStore;
         this.recoveryService = recoveryService;
         this.credentialVault = credentialVault;
+        this.indexPatch = indexPatch;
     }
 
     public ObservableCollection<string> RecentRepositories { get; } = [];
@@ -80,6 +83,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public ObservableCollection<FileTreeItem> FileTree { get; } = [];
     public ObservableCollection<OperationLogEntry> OperationLog { get; } = [];
     public ObservableCollection<ConflictFile> Conflicts { get; } = [];
+    public ObservableCollection<DiffHunk> DiffHunks { get; } = [];
     public ObservableCollection<string> Notices { get; } = [];
     public IReadOnlyList<string> RepositorySortModes { get; } =
         ["创建时间", "修改时间", "文件大小"];
@@ -124,6 +128,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool hasConflicts;
     [ObservableProperty] private bool hasSelectedConflict;
     [ObservableProperty] private bool canEditSelectedConflict;
+    [ObservableProperty] private bool hasDiffHunks;
     [ObservableProperty] private bool canContinueOperation;
     [ObservableProperty] private bool canAbortOperation;
     [ObservableProperty] private string conflictStatusText = "当前没有进行中的冲突操作。";
@@ -755,6 +760,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public async Task SelectChangeAsync(FileChange? change)
     {
         SelectedChange = change;
+        DiffHunks.Clear();
+        HasDiffHunks = false;
         if (change is null)
         {
             DiffText = string.Empty;
@@ -765,6 +772,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             DiffText = await diff.GetUnifiedDiffAsync(
                 ActiveRepositoryPath, change.Path, change.IsStaged);
+            Replace(
+                DiffHunks,
+                await diff.GetWorkingDiffAsync(
+                    ActiveRepositoryPath, change.Path, change.IsStaged));
+            HasDiffHunks = DiffHunks.Count > 0;
             await OpenFileAsync(Path.Combine(ActiveRepositoryPath, change.Path));
         }
         catch (Exception exception)
@@ -1160,6 +1172,68 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             return null;
         }
+    }
+
+    public async Task<GitOperationResult?> ApplySelectedHunksAsync(
+        IReadOnlyList<DiffHunk> hunks,
+        bool unstage)
+    {
+        if (indexPatch is null || SelectedChange is null || hunks.Count == 0)
+        {
+            StatusText = hunks.Count == 0 ? "请先选择至少一个差异块。" : "差异块服务不可用。";
+            return null;
+        }
+        if (HasUnsavedEditorChanges && IsCurrentDocument(SelectedChange.Path))
+        {
+            if (!await SaveCurrentDocumentAsync(refreshAfterSave: false))
+            {
+                return null;
+            }
+            await SelectChangeAsync(SelectedChange);
+            StatusText = "文件已保存，差异已刷新；请重新选择要处理的差异块。";
+            return null;
+        }
+        var path = SelectedChange.Path;
+        var result = unstage
+            ? await indexPatch.UnstageHunksAsync(ActiveRepositoryPath, path, hunks)
+            : await indexPatch.StageHunksAsync(ActiveRepositoryPath, path, hunks);
+        ShowResult(result);
+        await RefreshAsync();
+        var refreshed = (unstage ? StagedChanges : UnstagedChanges)
+                            .FirstOrDefault(change => change.Path.Equals(path, StringComparison.OrdinalIgnoreCase))
+                        ?? (unstage ? UnstagedChanges : StagedChanges)
+                            .FirstOrDefault(change => change.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+        await SelectChangeAsync(refreshed);
+        return result;
+    }
+
+    public async Task<GitOperationResult> ResolveSelectedBinaryConflictAsync(ConflictSide side)
+    {
+        if (SelectedConflict is not { IsBinary: true } conflict)
+        {
+            throw new InvalidOperationException("请先选择一个二进制冲突文件。");
+        }
+        var result = await git.ResolveBinaryConflictAsync(
+            ActiveRepositoryPath, conflict.Path, side);
+        ShowResult(result);
+        await RefreshAsync();
+        return result;
+    }
+
+    public Task<IReadOnlyList<RecoveryPoint>> GetRecoveryPointsAsync() =>
+        recoveryService.ListAsync(ActiveRepositoryPath);
+
+    public async Task<GitOperationResult> RestoreRecoveryPointAsync(RecoveryPoint point)
+    {
+        if (!Path.GetFullPath(point.RepositoryPath).Equals(
+                Path.GetFullPath(ActiveRepositoryPath), StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("恢复点不属于当前仓库。");
+        }
+        var result = await recoveryService.RestoreAsync(point);
+        ShowResult(result);
+        await ReloadAllAsync();
+        return result;
     }
 
     public async Task<GitOperationResult> ConfigureRemoteAsync(
@@ -1595,6 +1669,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         FileTree.Clear();
         OperationLog.Clear();
         Conflicts.Clear();
+        DiffHunks.Clear();
+        HasDiffHunks = false;
         SelectConflict(null);
         UpdateConflictState(RepositoryOperationState.None);
         Notices.Clear();

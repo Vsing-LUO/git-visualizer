@@ -51,6 +51,8 @@
                 <Separator/>
                 <MenuItem Header="标签管理…" Click="TagManagement_OnClick" IsEnabled="{Binding HasRepository}"/>
                 <MenuItem Header="临时现场（stash）…" Click="StashManagement_OnClick" IsEnabled="{Binding HasRepository}"/>
+                <Separator/>
+                <MenuItem Header="恢复中心…" Click="RecoveryCenter_OnClick" IsEnabled="{Binding HasRepository}"/>
             </MenuItem>
             <MenuItem Header="分支">
                 <MenuItem Header="变基当前分支…" Click="Rebase_OnClick" IsEnabled="{Binding HasRepository}"/>
@@ -307,9 +309,82 @@
             <TabControl Grid.Column="4"
                         SelectedIndex="{Binding SelectedRightTabIndex, Mode=TwoWay}">
                 <TabItem Header="{DynamicResource Tab.Diff}">
-                    <TextBox Text="{Binding DiffText}" FontFamily="Cascadia Mono,Consolas"
-                             FontSize="12" IsReadOnly="True" AcceptsReturn="True"
-                             HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"/>
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <DockPanel Margin="7" Visibility="{Binding HasDiffHunks, Converter={StaticResource BoolToVisibility}}">
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button Content="暂存所选块" Padding="12,4" Click="StageSelectedHunks_OnClick">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SelectedChange.IsStaged}" Value="False">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                                <Button Content="取消暂存所选块" Padding="12,4" Click="UnstageSelectedHunks_OnClick">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SelectedChange.IsStaged}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                            </StackPanel>
+                            <TextBlock Text="按 Ctrl 或 Shift 可多选差异块" VerticalAlignment="Center" Opacity="0.62"/>
+                        </DockPanel>
+                        <ListBox x:Name="HunkList" Grid.Row="1" ItemsSource="{Binding DiffHunks}"
+                                 SelectionMode="Extended" BorderThickness="0"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                            <ListBox.Style>
+                                <Style TargetType="ListBox">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasDiffHunks}" Value="False">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ListBox.Style>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Margin="4" Padding="8" BorderBrush="{StaticResource SubtleBorderBrush}"
+                                            BorderThickness="1" CornerRadius="5">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Header}" FontFamily="Cascadia Mono,Consolas"
+                                                       FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}"/>
+                                            <TextBlock Margin="0,5,0,0" Text="{Binding Preview}"
+                                                       FontFamily="Cascadia Mono,Consolas" FontSize="11"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <TextBox Grid.Row="1" Text="{Binding DiffText}" FontFamily="Cascadia Mono,Consolas"
+                                 FontSize="12" IsReadOnly="True" AcceptsReturn="True"
+                                 HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                            <TextBox.Style>
+                                <Style TargetType="TextBox">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasDiffHunks}" Value="False">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBox.Style>
+                        </TextBox>
+                    </Grid>
                 </TabItem>
                 <TabItem Header="{DynamicResource Tab.Editor}">
                     <Grid>
@@ -694,6 +769,40 @@
                                                  VerticalScrollBarVisibility="Auto"
                                                  ToolTip="确认内容正确后，在下方标记为已解决"/>
                                     </Grid>
+                                </Border>
+                                <Border Grid.Row="1" Grid.RowSpan="4"
+                                        Panel.ZIndex="10"
+                                        Padding="24"
+                                        Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+                                        BorderBrush="{StaticResource WarningBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="6">
+                                    <Border.Style>
+                                        <Style TargetType="Border">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SelectedConflict.IsBinary}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="540">
+                                        <TextBlock Text="二进制冲突安全解决器"
+                                                   FontSize="18" FontWeight="SemiBold"
+                                                   HorizontalAlignment="Center"/>
+                                        <TextBlock Margin="0,10,0,18"
+                                                   Text="程序会直接复制 Git 对象中的原始字节，不会把文件当作文本解码。也可以先用外部程序替换工作区文件，再采用当前工作区文件。"
+                                                   TextWrapping="Wrap" TextAlignment="Center" Opacity="0.65"/>
+                                        <UniformGrid Columns="3">
+                                            <Button Content="采用当前版本 (ours)" Margin="3" Padding="10,8"
+                                                    Click="ResolveBinaryOurs_OnClick"/>
+                                            <Button Content="采用对方版本 (theirs)" Margin="3" Padding="10,8"
+                                                    Click="ResolveBinaryTheirs_OnClick"/>
+                                            <Button Content="使用当前工作区文件" Margin="3" Padding="10,8"
+                                                    Click="ResolveBinaryCurrentFile_OnClick"/>
+                                        </UniformGrid>
+                                    </StackPanel>
                                 </Border>
                             </Grid>
 

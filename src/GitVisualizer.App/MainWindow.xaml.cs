@@ -157,6 +157,40 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void RecoveryCenter_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!viewModel.HasRepository)
+        {
+            return;
+        }
+        var points = await viewModel.GetRecoveryPointsAsync();
+        var dialog = new RecoveryCenterWindow(points) { Owner = this };
+        if (dialog.ShowDialog() != true || dialog.SelectedPoint is null)
+        {
+            return;
+        }
+        var point = dialog.SelectedPoint;
+        if (MessageBox.Show(
+                this,
+                $"恢复到 {point.CreatedAt:yyyy-MM-dd HH:mm:ss} 的状态？\n\n" +
+                "程序会先保存当前现场，然后创建并切换到独立 recovered/... 分支，同时恢复当时的工作区和暂存区。",
+                "确认恢复",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning) != MessageBoxResult.Yes)
+        {
+            return;
+        }
+        var result = await viewModel.RestoreRecoveryPointAsync(point);
+        MessageBox.Show(
+            this,
+            result.Success
+                ? result.Summary + "\n\n" + string.Join("\n", result.Details)
+                : result.ErrorMessage ?? result.Summary,
+            result.Success ? "恢复完成" : "恢复失败",
+            MessageBoxButton.OK,
+            result.Success ? MessageBoxImage.Information : MessageBoxImage.Error);
+    }
+
     private async void Push_OnClick(object sender, RoutedEventArgs e)
     {
         var remote = viewModel.SelectedRemote;
@@ -647,6 +681,16 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void StageSelectedHunks_OnClick(object sender, RoutedEventArgs e) =>
+        await viewModel.ApplySelectedHunksAsync(
+            HunkList.SelectedItems.Cast<DiffHunk>().ToArray(),
+            unstage: false);
+
+    private async void UnstageSelectedHunks_OnClick(object sender, RoutedEventArgs e) =>
+        await viewModel.ApplySelectedHunksAsync(
+            HunkList.SelectedItems.Cast<DiffHunk>().ToArray(),
+            unstage: true);
+
     private async void Pull_OnClick(object sender, RoutedEventArgs e)
     {
         if (!viewModel.HasRepository)
@@ -1083,6 +1127,34 @@ public partial class MainWindow : Window
 
     private async void ResolveConflict_OnClick(object sender, RoutedEventArgs e) =>
         await viewModel.ResolveSelectedConflictAsync();
+
+    private async void ResolveBinaryOurs_OnClick(object sender, RoutedEventArgs e) =>
+        await ResolveBinaryConflictAsync(ConflictSide.Ours);
+
+    private async void ResolveBinaryTheirs_OnClick(object sender, RoutedEventArgs e) =>
+        await ResolveBinaryConflictAsync(ConflictSide.Theirs);
+
+    private async void ResolveBinaryCurrentFile_OnClick(object sender, RoutedEventArgs e) =>
+        await ResolveBinaryConflictAsync(ConflictSide.CurrentFile);
+
+    private async Task ResolveBinaryConflictAsync(ConflictSide side)
+    {
+        var label = side switch
+        {
+            ConflictSide.Ours => "当前版本（ours）",
+            ConflictSide.Theirs => "对方版本（theirs）",
+            _ => "当前工作区文件"
+        };
+        if (MessageBox.Show(
+                this,
+                $"采用{label}的原始字节并标记该冲突为已解决？",
+                "解决二进制冲突",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning) == MessageBoxResult.Yes)
+        {
+            await viewModel.ResolveSelectedBinaryConflictAsync(side);
+        }
+    }
 
     private async void ContinueOperation_OnClick(object sender, RoutedEventArgs e) =>
         await viewModel.ContinueOperationAsync();

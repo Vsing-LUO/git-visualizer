@@ -58,7 +58,8 @@ public enum ConflictSide
     Ours,
     Theirs,
     Both,
-    Manual
+    Manual,
+    CurrentFile
 }
 
 public sealed record GitIdentity(string Name, string Email);
@@ -78,6 +79,26 @@ public sealed record FileChange(
     bool IsStaged,
     long Size = 0,
     bool IsBinary = false);
+
+public sealed record DiffLine(char Origin, int? OldLine, int? NewLine, string Text);
+
+public sealed record DiffHunk(
+    string Id,
+    string Path,
+    string Header,
+    int OldStart,
+    int OldLines,
+    int NewStart,
+    int NewLines,
+    IReadOnlyList<DiffLine> Lines,
+    string Patch,
+    string SnapshotId,
+    bool IsStaged)
+{
+    public string Preview => string.Join(
+        Environment.NewLine,
+        Lines.Take(8).Select(line => $"{line.Origin}{line.Text}"));
+}
 
 public sealed record CommitNode(
     string Id,

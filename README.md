@@ -67,6 +67,19 @@ v1.1.0 自包含程序位于：
 artifacts\releases\v1.1.0\GitVisualizer.exe
 ```
 
+## v1.2.0 完整工作流
+
+- 差异页支持使用 Ctrl/Shift 多选并暂存或取消暂存多个差异块；操作前校验索引和工作区快照，避免把过期差异应用到新内容
+- 仓库菜单新增恢复中心；恢复前自动保护当前现场，并在独立的 `recovered/...` 分支恢复当时的工作区与暂存区
+- 二进制冲突可安全采用 ours、theirs 或当前工作区文件；Git Blob 以原始字节复制，不经过文本编码
+- 延续 v1.1.0 的标签、stash、rebase、多远程选择和真实 `force-with-lease` 工作流
+
+v1.2.0 自包含程序位于：
+
+```text
+artifacts\releases\v1.2.0\GitVisualizer.exe
+```
+
 ## 项目结构
 
 - `GitVisualizer.App`：WPF 中文界面、MVVM、提交图、编辑器和对话框
