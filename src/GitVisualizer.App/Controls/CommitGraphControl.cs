@@ -25,6 +25,7 @@ public sealed class CommitGraphControl : FrameworkElement
     private const double LaneWidth = 28;
     private const double GraphLeft = 22;
     private const double MinimumTextStart = 132;
+    private const double CollapsedTextStart = 12;
     private const double BadgeHeight = 18;
 
     private static readonly Brush[] LaneBrushes =
@@ -152,6 +153,23 @@ public sealed class CommitGraphControl : FrameworkElement
         set => SetValue(SelectedBranchNameProperty, value);
     }
 
+    public static readonly DependencyProperty IsGraphCollapsedProperty =
+        DependencyProperty.Register(
+            nameof(IsGraphCollapsed),
+            typeof(bool),
+            typeof(CommitGraphControl),
+            new FrameworkPropertyMetadata(
+                false,
+                FrameworkPropertyMetadataOptions.AffectsMeasure |
+                FrameworkPropertyMetadataOptions.AffectsRender,
+                OnGraphCollapsedChanged));
+
+    public bool IsGraphCollapsed
+    {
+        get => (bool)GetValue(IsGraphCollapsedProperty);
+        set => SetValue(IsGraphCollapsedProperty, value);
+    }
+
     public event EventHandler<CommitSelectedEventArgs>? CommitSelected;
     public event EventHandler<BranchSelectedEventArgs>? BranchSelected;
 
@@ -208,6 +226,16 @@ public sealed class CommitGraphControl : FrameworkElement
         DependencyPropertyChangedEventArgs args)
     {
         ((CommitGraphControl)dependencyObject).RebuildLayout();
+    }
+
+    private static void OnGraphCollapsedChanged(
+        DependencyObject dependencyObject,
+        DependencyPropertyChangedEventArgs args)
+    {
+        var control = (CommitGraphControl)dependencyObject;
+        control.hoveredLane = null;
+        control.Cursor = Cursors.Arrow;
+        control.ToolTip = null;
     }
 
     private void OnItemsCollectionChanged(
@@ -285,10 +313,8 @@ public sealed class CommitGraphControl : FrameworkElement
         var highestLane = layout.Count == 0
             ? 0
             : layout.Max(item => item.Lane);
-        graphTextStart = Math.Max(
-            MinimumTextStart,
-            GraphLeft + (highestLane + 1) * LaneWidth + 24);
-        renderedHighestLane = highestLane;
+        graphTextStart = GetCommitTextStart();
+        renderedHighestLane = IsGraphCollapsed ? -1 : highestLane;
         branchBadgeHits.Clear();
         headBadgeHit = null;
 
@@ -302,7 +328,10 @@ public sealed class CommitGraphControl : FrameworkElement
                 Math.Max(layout.Count * RowHeight, 1)));
 
         DrawSelection(drawingContext, selectionFill, selectionBorder);
-        DrawParentConnections(drawingContext, nodeById);
+        if (!IsGraphCollapsed)
+        {
+            DrawParentConnections(drawingContext, nodeById);
+        }
 
         foreach (var item in layout)
         {
@@ -410,24 +439,27 @@ public sealed class CommitGraphControl : FrameworkElement
                           historyEvent.Kind == GitHistoryEventKind.Merge);
         var isRevert = commitEvents.Any(historyEvent =>
             historyEvent.Kind == GitHistoryEventKind.Revert);
-        drawingContext.DrawEllipse(
-            isRevert ? Brushes.White : CreateLaneBrush(item.Lane, isLaneHovered ? 1 : 0.92),
-            new Pen(
-                isRevert
-                    ? CreateLaneBrush(item.Lane, 1)
-                    : Brushes.White,
-                isLaneHovered ? 2 : 1.5),
-            new Point(x, y),
-            isLaneHovered ? 7 : 6,
-            isLaneHovered ? 7 : 6);
-        if (isMerge)
+        if (!IsGraphCollapsed)
         {
             drawingContext.DrawEllipse(
-                null,
-                new Pen(CreateLaneBrush(item.Lane, 0.92), 2),
+                isRevert ? Brushes.White : CreateLaneBrush(item.Lane, isLaneHovered ? 1 : 0.92),
+                new Pen(
+                    isRevert
+                        ? CreateLaneBrush(item.Lane, 1)
+                        : Brushes.White,
+                    isLaneHovered ? 2 : 1.5),
                 new Point(x, y),
-                10,
-                10);
+                isLaneHovered ? 7 : 6,
+                isLaneHovered ? 7 : 6);
+            if (isMerge)
+            {
+                drawingContext.DrawEllipse(
+                    null,
+                    new Pen(CreateLaneBrush(item.Lane, 0.92), 2),
+                    new Point(x, y),
+                    10,
+                    10);
+            }
         }
 
         var message = CreateText(
@@ -1034,6 +1066,21 @@ public sealed class CommitGraphControl : FrameworkElement
                 item.Commit.Id,
                 commitId,
                 StringComparison.Ordinal))?.Lane;
+
+    internal double GetCommitTextStart()
+    {
+        if (IsGraphCollapsed)
+        {
+            return CollapsedTextStart;
+        }
+
+        var highestLane = layout.Count == 0
+            ? 0
+            : layout.Max(item => item.Lane);
+        return Math.Max(
+            MinimumTextStart,
+            GraphLeft + (highestLane + 1) * LaneWidth + 24);
+    }
 
     private static FormattedText CreateText(
         string text,

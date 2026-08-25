@@ -25,6 +25,16 @@ public partial class MainWindow : Window
     private readonly MainWindowViewModel viewModel;
     private Point dragStart;
     private FileTreeItem? selectedTreeItem;
+    private bool isRecoveryCenterOpen;
+    private bool isCompactCommitMessageLayout;
+    private ListBox? rightSelectionList;
+    private Canvas? rightSelectionOverlay;
+    private System.Windows.Shapes.Rectangle? rightSelectionRectangle;
+    private Point rightSelectionStart;
+    private bool rightSelectionDragging;
+    private bool isBulkSelectingFiles;
+    private object? rightSelectionClickedItem;
+    private HashSet<object> rightSelectionBaseItems = [];
 
     public MainWindow(MainWindowViewModel viewModel)
     {
@@ -33,6 +43,62 @@ public partial class MainWindow : Window
         DataContext = viewModel;
         PreviewKeyDown += MainWindow_OnPreviewKeyDown;
         viewModel.ConflictDetected += ViewModel_OnConflictDetected;
+    }
+
+    private void CommitPanel_OnSizeChanged(
+        object sender,
+        SizeChangedEventArgs e)
+    {
+        Dispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.Loaded,
+            new Action(UpdateCommitMessageLayout));
+    }
+
+    private void UpdateCommitMessageLayout()
+    {
+        var panelHeight = CommitPanel.ActualHeight;
+        var useCompactLayout = ShouldUseCompactCommitMessageLayout(
+            panelHeight,
+            CommitMessageRow.ActualHeight,
+            isCompactCommitMessageLayout);
+        if (useCompactLayout == isCompactCommitMessageLayout)
+        {
+            return;
+        }
+
+        isCompactCommitMessageLayout = useCompactLayout;
+        Grid.SetRow(CommitMessageTextBox, useCompactLayout ? 0 : 1);
+        CommitMessageTextBox.Margin = useCompactLayout
+            ? new Thickness(64, 7, 10, 7)
+            : new Thickness(10, 8, 10, 4);
+        CommitMessageTextBox.AcceptsReturn = !useCompactLayout;
+        CommitMessageTextBox.TextWrapping = useCompactLayout
+            ? TextWrapping.NoWrap
+            : TextWrapping.Wrap;
+        CommitMessageTextBox.VerticalScrollBarVisibility = useCompactLayout
+            ? ScrollBarVisibility.Hidden
+            : ScrollBarVisibility.Auto;
+        CommitMessageTextBox.VerticalContentAlignment = useCompactLayout
+            ? VerticalAlignment.Center
+            : VerticalAlignment.Top;
+        CommitMessageHint.Visibility = useCompactLayout
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+    }
+
+    internal static bool ShouldUseCompactCommitMessageLayout(
+        double panelHeight,
+        double messageRowHeight,
+        bool isCurrentlyCompact)
+    {
+        if (panelHeight <= 0 || !double.IsFinite(panelHeight))
+        {
+            return false;
+        }
+
+        var availableRatio = Math.Max(0, messageRowHeight) / panelHeight;
+        var threshold = isCurrentlyCompact ? 0.46 : 0.40;
+        return availableRatio < threshold;
     }
 
     private void ViewModel_OnConflictDetected(
@@ -159,36 +225,53 @@ public partial class MainWindow : Window
 
     private async void RecoveryCenter_OnClick(object sender, RoutedEventArgs e)
     {
-        if (!viewModel.HasRepository)
+        if (!viewModel.HasRepository || isRecoveryCenterOpen)
         {
             return;
         }
-        var points = await viewModel.GetRecoveryPointsAsync();
-        var dialog = new RecoveryCenterWindow(points) { Owner = this };
-        if (dialog.ShowDialog() != true || dialog.SelectedPoint is null)
+        isRecoveryCenterOpen = true;
+        try
         {
-            return;
-        }
-        var point = dialog.SelectedPoint;
-        if (MessageBox.Show(
+            var points = await viewModel.GetRecoveryPointsAsync();
+            var dialog = new RecoveryCenterWindow(points) { Owner = this };
+            if (dialog.ShowDialog() != true || dialog.SelectedPoint is null)
+            {
+                return;
+            }
+            var point = dialog.SelectedPoint;
+            if (MessageBox.Show(
+                    this,
+                    $"恢复到 {point.LocalCreatedAt:yyyy-MM-dd HH:mm:ss} 的状态？\n\n" +
+                    "程序会先保存当前现场，然后创建并切换到独立 recovered/... 分支，同时恢复当时的工作区和暂存区。",
+                    "确认恢复",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            {
+                return;
+            }
+            var result = await viewModel.RestoreRecoveryPointAsync(point);
+            MessageBox.Show(
                 this,
-                $"恢复到 {point.CreatedAt:yyyy-MM-dd HH:mm:ss} 的状态？\n\n" +
-                "程序会先保存当前现场，然后创建并切换到独立 recovered/... 分支，同时恢复当时的工作区和暂存区。",
-                "确认恢复",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Warning) != MessageBoxResult.Yes)
-        {
-            return;
+                result.Success
+                    ? result.Summary + "\n\n" + string.Join("\n", result.Details)
+                    : result.ErrorMessage ?? result.Summary,
+                result.Success ? "恢复完成" : "恢复失败",
+                MessageBoxButton.OK,
+                result.Success ? MessageBoxImage.Information : MessageBoxImage.Error);
         }
-        var result = await viewModel.RestoreRecoveryPointAsync(point);
-        MessageBox.Show(
-            this,
-            result.Success
-                ? result.Summary + "\n\n" + string.Join("\n", result.Details)
-                : result.ErrorMessage ?? result.Summary,
-            result.Success ? "恢复完成" : "恢复失败",
-            MessageBoxButton.OK,
-            result.Success ? MessageBoxImage.Information : MessageBoxImage.Error);
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                $"无法打开恢复中心：{exception.Message}",
+                "恢复中心",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            isRecoveryCenterOpen = false;
+        }
     }
 
     private async void Push_OnClick(object sender, RoutedEventArgs e)
@@ -495,6 +578,45 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void RenameBranch_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (BranchList.SelectedItem is not BranchInfo branch)
+        {
+            MessageBox.Show(this, "请先在左侧选择一个本地分支。", "重命名分支");
+            return;
+        }
+        if (branch.IsRemote)
+        {
+            MessageBox.Show(
+                this,
+                "远程跟踪分支不能在这里重命名。请先创建或选择本地分支。",
+                "重命名分支",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var newName = Prompt(
+            "重命名分支",
+            $"将分支 {branch.FriendlyName} 重命名为：",
+            branch.FriendlyName);
+        if (newName is null || string.Equals(newName, branch.FriendlyName, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var result = await viewModel.RenameBranchAsync(branch, newName);
+        if (!result.Success)
+        {
+            MessageBox.Show(
+                this,
+                result.ErrorMessage ?? result.Summary,
+                "无法重命名分支",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
     private async void MergeBranch_OnClick(object sender, RoutedEventArgs e)
     {
         if (BranchList.SelectedItem is not BranchInfo branch)
@@ -540,7 +662,9 @@ public partial class MainWindow : Window
 
     private async void ChangeList_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (((ListBox)sender).SelectedItem is FileChange change)
+        UpdateSelectAllCheckBoxes();
+        if (!isBulkSelectingFiles && !rightSelectionDragging &&
+            ((ListBox)sender).SelectedItem is FileChange change)
         {
             await viewModel.SelectChangeAsync(change);
         }
@@ -565,8 +689,110 @@ public partial class MainWindow : Window
         await viewModel.SelectChangeAsync(clickedChange);
     }
 
+    private void ChangeList_OnPreviewMouseRightButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (sender is not ListBox listBox)
+        {
+            return;
+        }
+
+        rightSelectionList = listBox;
+        rightSelectionOverlay = ReferenceEquals(listBox, UnstagedList)
+            ? UnstagedSelectionOverlay
+            : StagedSelectionOverlay;
+        rightSelectionRectangle = ReferenceEquals(listBox, UnstagedList)
+            ? UnstagedSelectionRectangle
+            : StagedSelectionRectangle;
+        rightSelectionStart = e.GetPosition(rightSelectionOverlay);
+        rightSelectionDragging = false;
+        rightSelectionBaseItems = Keyboard.Modifiers.HasFlag(ModifierKeys.Control)
+            ? listBox.SelectedItems.Cast<object>().ToHashSet()
+            : [];
+        rightSelectionClickedItem = e.OriginalSource is DependencyObject source &&
+                                    ItemsControl.ContainerFromElement(listBox, source) is ListBoxItem item
+            ? item.DataContext
+            : null;
+    }
+
+    private async void DiscardChange_OnClick(object sender, RoutedEventArgs e)
+    {
+        var changes = UnstagedList.SelectedItems.Cast<FileChange>()
+            .Where(change => !change.IsStaged)
+            .DistinctBy(change => change.Path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (changes.Length == 0)
+        {
+            MessageBox.Show(this, "请先选择至少一个未暂存修改。", "丢弃修改");
+            return;
+        }
+
+        var untrackedCount = changes.Count(change => change.State == GitChangeState.Untracked);
+        var pathPreview = string.Join(
+            Environment.NewLine,
+            changes.Take(8).Select(change => $"• {change.Path}"));
+        if (changes.Length > 8)
+        {
+            pathPreview += $"{Environment.NewLine}…另有 {changes.Length - 8} 个文件";
+        }
+        var untrackedWarning = untrackedCount > 0
+            ? $"\n\n其中 {untrackedCount} 个未跟踪文件会被删除。"
+            : string.Empty;
+        var unsavedWarning = viewModel.HasUnsavedEditorChanges
+            ? "\n\n注意：编辑器中尚未保存的内容不会写入恢复点；若属于所选文件，将永久丢失。"
+            : string.Empty;
+        if (MessageBox.Show(
+                this,
+                $"确定要丢弃所选 {changes.Length} 个文件的未暂存修改吗？\n\n{pathPreview}" +
+                untrackedWarning + unsavedWarning +
+                "\n\n程序会先创建自动恢复点，可稍后从恢复中心找回。",
+                "确认丢弃修改",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning) != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        var result = await viewModel.DiscardChangesAsync(changes);
+        if (!result.Success)
+        {
+            MessageBox.Show(
+                this,
+                result.ErrorMessage ?? result.Summary,
+                "丢弃修改失败",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
     private void ChangeList_OnPreviewMouseMove(object sender, MouseEventArgs e)
     {
+        if (e.RightButton == MouseButtonState.Pressed &&
+            sender is ListBox rightList &&
+            ReferenceEquals(rightList, rightSelectionList) &&
+            rightSelectionOverlay is not null &&
+            rightSelectionRectangle is not null)
+        {
+            var current = e.GetPosition(rightSelectionOverlay);
+            if (!rightSelectionDragging && (current - rightSelectionStart).Length > 5)
+            {
+                rightSelectionDragging = true;
+                rightList.CaptureMouse();
+                if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+                {
+                    rightList.UnselectAll();
+                }
+                rightSelectionRectangle.Visibility = Visibility.Visible;
+            }
+            if (rightSelectionDragging)
+            {
+                UpdateRightDragSelection(current);
+                e.Handled = true;
+            }
+            return;
+        }
+
         if (e.LeftButton == MouseButtonState.Pressed &&
             ((ListBox)sender).SelectedItem is FileChange change &&
             (e.GetPosition(this) - dragStart).Length > 5)
@@ -681,15 +907,243 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void ChangeList_OnPreviewMouseRightButtonUp(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (sender is not ListBox listBox || !ReferenceEquals(listBox, rightSelectionList))
+        {
+            return;
+        }
+
+        var wasDragging = rightSelectionDragging;
+        if (wasDragging)
+        {
+            e.Handled = true;
+            rightSelectionRectangle!.Visibility = Visibility.Collapsed;
+            listBox.ReleaseMouseCapture();
+        }
+        else if (rightSelectionClickedItem is not null)
+        {
+            if (!listBox.SelectedItems.Contains(rightSelectionClickedItem))
+            {
+                if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+                {
+                    listBox.UnselectAll();
+                }
+                listBox.SelectedItems.Add(rightSelectionClickedItem);
+            }
+        }
+
+        rightSelectionList = null;
+        rightSelectionOverlay = null;
+        rightSelectionRectangle = null;
+        rightSelectionClickedItem = null;
+        rightSelectionBaseItems = [];
+        rightSelectionDragging = false;
+        UpdateSelectAllCheckBoxes();
+        if (listBox.SelectedItem is FileChange change)
+        {
+            await viewModel.SelectChangeAsync(change);
+        }
+    }
+
+    private void UpdateRightDragSelection(Point current)
+    {
+        var overlay = rightSelectionOverlay!;
+        var left = Math.Clamp(Math.Min(rightSelectionStart.X, current.X), 0, overlay.ActualWidth);
+        var top = Math.Clamp(Math.Min(rightSelectionStart.Y, current.Y), 0, overlay.ActualHeight);
+        var right = Math.Clamp(Math.Max(rightSelectionStart.X, current.X), 0, overlay.ActualWidth);
+        var bottom = Math.Clamp(Math.Max(rightSelectionStart.Y, current.Y), 0, overlay.ActualHeight);
+        var selectionBounds = new Rect(left, top, right - left, bottom - top);
+
+        Canvas.SetLeft(rightSelectionRectangle!, left);
+        Canvas.SetTop(rightSelectionRectangle!, top);
+        rightSelectionRectangle!.Width = selectionBounds.Width;
+        rightSelectionRectangle.Height = selectionBounds.Height;
+
+        isBulkSelectingFiles = true;
+        try
+        {
+            foreach (var item in rightSelectionList!.Items.Cast<object>())
+            {
+                var container = rightSelectionList.ItemContainerGenerator.ContainerFromItem(item) as ListBoxItem;
+                var intersects = false;
+                if (container is not null)
+                {
+                    var itemTopLeft = container.TranslatePoint(new Point(0, 0), overlay);
+                    intersects = selectionBounds.IntersectsWith(
+                        new Rect(itemTopLeft, new Size(container.ActualWidth, container.ActualHeight)));
+                }
+                var shouldSelect = rightSelectionBaseItems.Contains(item) || intersects;
+                var isSelected = rightSelectionList.SelectedItems.Contains(item);
+                if (shouldSelect && !isSelected)
+                {
+                    rightSelectionList.SelectedItems.Add(item);
+                }
+                else if (!shouldSelect && isSelected)
+                {
+                    rightSelectionList.SelectedItems.Remove(item);
+                }
+            }
+        }
+        finally
+        {
+            isBulkSelectingFiles = false;
+        }
+        UpdateSelectAllCheckBoxes();
+    }
+
+    private async void SelectAllUnstaged_OnClick(object sender, RoutedEventArgs e) =>
+        await SetAllSelectedAsync(UnstagedList, SelectAllUnstagedCheckBox.IsChecked == true);
+
+    private async void SelectAllStaged_OnClick(object sender, RoutedEventArgs e) =>
+        await SetAllSelectedAsync(StagedList, SelectAllStagedCheckBox.IsChecked == true);
+
+    private async Task SetAllSelectedAsync(ListBox listBox, bool selected)
+    {
+        isBulkSelectingFiles = true;
+        try
+        {
+            if (selected)
+            {
+                listBox.SelectAll();
+            }
+            else
+            {
+                listBox.UnselectAll();
+            }
+        }
+        finally
+        {
+            isBulkSelectingFiles = false;
+        }
+        UpdateSelectAllCheckBoxes();
+        if (listBox.SelectedItem is FileChange change)
+        {
+            await viewModel.SelectChangeAsync(change);
+        }
+    }
+
+    private void UpdateSelectAllCheckBoxes()
+    {
+        SelectAllUnstagedCheckBox.IsChecked =
+            UnstagedList.Items.Count > 0 &&
+            UnstagedList.SelectedItems.Count == UnstagedList.Items.Count;
+        SelectAllStagedCheckBox.IsChecked =
+            StagedList.Items.Count > 0 &&
+            StagedList.SelectedItems.Count == StagedList.Items.Count;
+    }
+
+    private async void StageSelectedFiles_OnClick(object sender, RoutedEventArgs e) =>
+        await viewModel.StageSelectedFilesAsync(
+            UnstagedList.SelectedItems.Cast<FileChange>().ToArray());
+
+    private async void UnstageSelectedFiles_OnClick(object sender, RoutedEventArgs e) =>
+        await viewModel.UnstageSelectedFilesAsync(
+            StagedList.SelectedItems.Cast<FileChange>().ToArray());
+
+    private async void CheckoutCommit_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (viewModel.SelectedCommit is not { } commit)
+        {
+            MessageBox.Show(this, "请先选择一个提交。", "切换提交");
+            return;
+        }
+        if (MessageBox.Show(
+                this,
+                $"切换到提交 {commit.ShortId} 吗？\n\n{commit.Message}\n\n" +
+                "这会进入游离 HEAD 状态，不会移动任何分支。工作区必须没有未提交修改。",
+                "切换到所选提交",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning) != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        var result = await viewModel.CheckoutSelectedCommitAsync();
+        if (result.Success)
+        {
+            MessageBox.Show(
+                this,
+                $"已切换到 {commit.ShortId}，当前处于游离 HEAD。\n\n" +
+                "恢复到正常 HEAD：在左侧分支列表中双击任意本地分支即可。\n\n" +
+                "如果你准备在这个版本上继续提交，请先在提交图中选择当前 HEAD，" +
+                "再点击“创建分支”，用新分支保存后续工作。",
+                "已进入游离 HEAD",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        else
+        {
+            MessageBox.Show(
+                this,
+                result.ErrorMessage ?? result.Summary,
+                "切换提交失败",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private async void CompareCommits_OnClick(object sender, RoutedEventArgs e)
+    {
+        var commits = viewModel.History
+            .GroupBy(commit => commit.Id, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToArray();
+        if (commits.Length < 2)
+        {
+            MessageBox.Show(
+                this,
+                "当前历史列表中至少需要两个提交才能比较。可先切回“全部分支”或加载更多历史。",
+                "比较提交",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var preferredNew = viewModel.SelectedCommit ??
+                           commits.FirstOrDefault(commit =>
+                               string.Equals(commit.Id, viewModel.Head?.CommitId, StringComparison.Ordinal)) ??
+                           commits[0];
+        var preferredOldId = preferredNew.ParentIds.FirstOrDefault(parentId =>
+                                 commits.Any(commit =>
+                                     string.Equals(commit.Id, parentId, StringComparison.Ordinal))) ??
+                             commits.First(commit =>
+                                 !string.Equals(commit.Id, preferredNew.Id, StringComparison.Ordinal)).Id;
+        var dialog = new CommitComparisonWindow(
+            commits,
+            preferredOldId,
+            preferredNew.Id)
+        {
+            Owner = this
+        };
+        if (dialog.ShowDialog() == true &&
+            dialog.OldCommit is { } oldCommit &&
+            dialog.NewCommit is { } newCommit)
+        {
+            await viewModel.CompareCommitsAsync(oldCommit, newCommit);
+        }
+    }
+
     private async void StageSelectedHunks_OnClick(object sender, RoutedEventArgs e) =>
         await viewModel.ApplySelectedHunksAsync(
-            HunkList.SelectedItems.Cast<DiffHunk>().ToArray(),
+            HunkList.SelectedItems.Cast<DiffRegionPresentation>()
+                .Select(region => region.SourceHunk)
+                .OfType<DiffHunk>()
+                .ToArray(),
             unstage: false);
 
     private async void UnstageSelectedHunks_OnClick(object sender, RoutedEventArgs e) =>
         await viewModel.ApplySelectedHunksAsync(
-            HunkList.SelectedItems.Cast<DiffHunk>().ToArray(),
+            HunkList.SelectedItems.Cast<DiffRegionPresentation>()
+                .Select(region => region.SourceHunk)
+                .OfType<DiffHunk>()
+                .ToArray(),
             unstage: true);
+
+    private void ToggleRawDiff_OnClick(object sender, RoutedEventArgs e) =>
+        viewModel.ToggleRawDiff();
 
     private async void Pull_OnClick(object sender, RoutedEventArgs e)
     {

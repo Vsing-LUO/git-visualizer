@@ -6,6 +6,8 @@
     <SolidColorBrush x:Key="DangerBrush" Color="#E05D5D"/>
     <SolidColorBrush x:Key="PanelBrush" Color="#12000000"/>
     <SolidColorBrush x:Key="SubtleBorderBrush" Color="#28000000"/>
+    <SolidColorBrush x:Key="SectionDividerBrush" Color="#6676818C"/>
+    <SolidColorBrush x:Key="SectionHeaderBrush" Color="#125B8CFF"/>
 
     <Style TargetType="Button">
         <Setter Property="Padding" Value="12,6"/>

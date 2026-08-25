@@ -100,6 +100,111 @@ public sealed record DiffHunk(
         Lines.Take(8).Select(line => $"{line.Origin}{line.Text}"));
 }
 
+public enum DiffFileChangeKind
+{
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Copied,
+    Unknown
+}
+
+public enum DiffChangeBlockKind
+{
+    Modified,
+    Added,
+    Deleted,
+    Context,
+    Notice
+}
+
+public sealed record DiffDisplayLine(
+    int? LineNumber,
+    string Text,
+    bool VisualizeWhitespace = false)
+{
+    public bool ContainsOnlyWhitespace =>
+        Text.Length > 0 && Text.All(char.IsWhiteSpace);
+
+    public string LineLabel => LineNumber is null ? string.Empty : $"第 {LineNumber} 行";
+
+    public string DisplayText => Text.Length == 0
+        ? "（空行）"
+        : VisualizeWhitespace || ContainsOnlyWhitespace
+            ? Text.Replace("\t", "→   ", StringComparison.Ordinal)
+                .Replace(" ", "·", StringComparison.Ordinal)
+            : Text;
+
+    public string Annotation => ContainsOnlyWhitespace
+        ? "此行只包含空格或 Tab"
+        : VisualizeWhitespace
+            ? "仅空白字符发生变化"
+            : string.Empty;
+}
+
+public sealed record DiffLinePair(
+    DiffDisplayLine? OldLine,
+    DiffDisplayLine? NewLine,
+    bool IsContext = false)
+{
+    public bool HasOldLine => OldLine is not null;
+    public bool HasNewLine => NewLine is not null;
+    public string OldLineLabel => OldLine?.LineLabel ?? string.Empty;
+    public string NewLineLabel => NewLine?.LineLabel ?? string.Empty;
+    public string OldDisplayText => OldLine?.DisplayText ?? "（无对应行）";
+    public string NewDisplayText => NewLine?.DisplayText ?? "（无对应行）";
+    public string OldAnnotation => OldLine?.Annotation ?? "这一侧不存在该行";
+    public string NewAnnotation => NewLine?.Annotation ?? "这一侧不存在该行";
+}
+
+public sealed record DiffChangeBlock(
+    DiffChangeBlockKind Kind,
+    string Title,
+    string Description,
+    IReadOnlyList<DiffLinePair> Rows)
+{
+    public bool HasRows => Rows.Count > 0;
+}
+
+public sealed record DiffRegionPresentation(
+    string Id,
+    string LocationText,
+    string OldLabel,
+    string NewLabel,
+    IReadOnlyList<DiffChangeBlock> Blocks,
+    DiffHunk? SourceHunk = null);
+
+public sealed record DiffFilePresentation(
+    string Path,
+    string? OldPath,
+    DiffFileChangeKind ChangeKind,
+    string StatusText,
+    string Summary,
+    string OldLabel,
+    string NewLabel,
+    bool IsBinary,
+    IReadOnlyList<DiffRegionPresentation> Regions,
+    IReadOnlyList<string> Notices)
+{
+    public string DisplayPath => ChangeKind is DiffFileChangeKind.Renamed or DiffFileChangeKind.Copied &&
+                                 !string.IsNullOrWhiteSpace(OldPath)
+        ? $"{OldPath} → {Path}"
+        : Path;
+}
+
+public sealed record DiffPresentation(
+    string Title,
+    string Summary,
+    string OldLabel,
+    string NewLabel,
+    IReadOnlyList<DiffFilePresentation> Files,
+    string RawText)
+{
+    public bool HasFiles => Files.Count > 0;
+    public int RegionCount => Files.Sum(file => file.Regions.Count);
+}
+
 public sealed record CommitNode(
     string Id,
     string ShortId,
@@ -271,7 +376,10 @@ public sealed record RecoveryPoint(
     string ArchivePath,
     DateTimeOffset CreatedAt,
     long Size,
-    bool IsRestorable);
+    bool IsRestorable)
+{
+    public DateTimeOffset LocalCreatedAt => CreatedAt.ToLocalTime();
+}
 
 public sealed record OperationLogEntry(
     string Id,

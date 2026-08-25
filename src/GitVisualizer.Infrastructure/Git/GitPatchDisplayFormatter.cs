@@ -51,12 +51,64 @@ internal static partial class GitPatchDisplayFormatter
         return string.Join('\n', lines);
     }
 
+    public static string FormatCommitComparison(
+        string patch,
+        string oldCommitId,
+        string newCommitId)
+    {
+        var oldShortId = oldCommitId[..Math.Min(8, oldCommitId.Length)];
+        var newShortId = newCommitId[..Math.Min(8, newCommitId.Length)];
+        if (string.IsNullOrWhiteSpace(patch))
+        {
+            return $"{oldShortId} → {newShortId}\n\n两个提交的文件内容相同。";
+        }
+
+        var lines = patch.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        for (var index = 0; index < lines.Length; index++)
+        {
+            if (PathHeaderPrefixes.Any(
+                    prefix => lines[index].StartsWith(prefix, StringComparison.Ordinal)))
+            {
+                lines[index] = DecodeQuotedPaths(lines[index]);
+            }
+        }
+
+        return $"比较提交：{oldShortId} → {newShortId}\n\n{string.Join('\n', lines)}";
+    }
+
+    public static string FormatRaw(string patch)
+    {
+        if (string.IsNullOrWhiteSpace(patch))
+        {
+            return string.Empty;
+        }
+
+        var lines = patch.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        for (var index = 0; index < lines.Length; index++)
+        {
+            if (PathHeaderPrefixes.Any(
+                    prefix => lines[index].StartsWith(prefix, StringComparison.Ordinal)))
+            {
+                lines[index] = DecodeQuotedPaths(lines[index]);
+            }
+        }
+        return string.Join('\n', lines);
+    }
+
+    internal static string DecodePathValue(string value)
+    {
+        var trimmed = value.Trim();
+        return trimmed.Length >= 2 && trimmed[0] == '"' && trimmed[^1] == '"'
+            ? DecodeGitQuotedString(trimmed[1..^1])
+            : trimmed;
+    }
+
     private static string DecodeQuotedPaths(string line) =>
         QuotedPathRegex().Replace(
             line,
             match => $"\"{DecodeGitQuotedString(match.Groups["content"].Value)}\"");
 
-    private static string DecodeGitQuotedString(string value)
+    internal static string DecodeGitQuotedString(string value)
     {
         var result = new StringBuilder(value.Length);
         var escapedBytes = new List<byte>();

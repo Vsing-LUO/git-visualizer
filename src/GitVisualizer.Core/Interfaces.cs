@@ -119,6 +119,12 @@ public interface IGitRepositoryService
 
 public interface IDiffService
 {
+    Task<DiffPresentation> GetWorkingDiffPresentationAsync(
+        string repositoryPath, string path, bool staged,
+        CancellationToken cancellationToken = default);
+    Task<DiffPresentation> CompareCommitsPresentationAsync(
+        string repositoryPath, string oldCommitId, string newCommitId, string? path = null,
+        CancellationToken cancellationToken = default);
     Task<IReadOnlyList<DiffHunk>> GetWorkingDiffAsync(
         string repositoryPath, string path, bool staged,
         CancellationToken cancellationToken = default);

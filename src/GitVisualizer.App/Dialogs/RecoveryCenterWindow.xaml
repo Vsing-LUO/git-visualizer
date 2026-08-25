@@ -26,7 +26,7 @@
                             <StackPanel>
                                 <TextBlock FontWeight="SemiBold" Text="{Binding Operation}"/>
                                 <TextBlock Margin="0,3,0,0" FontSize="11" Opacity="0.62">
-                                    <Run Text="{Binding CreatedAt, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}"/>
+                                    <Run Text="{Binding LocalCreatedAt, Mode=OneWay, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}"/>
                                     <Run Text="  ·  "/>
                                     <Run Text="{Binding HeadId}"/>
                                 </TextBlock>

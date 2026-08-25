@@ -455,6 +455,86 @@ public sealed class GitRepositoryServiceTests
     }
 
     [Fact]
+    public async Task CheckoutCommit_DetachesHeadAndRejectsDirtyWorkspace()
+    {
+        using var temporary = new TemporaryDirectory();
+        var service = CreateService();
+        await service.InitializeAsync(temporary.Path, Identity);
+        var path = Path.Combine(temporary.Path, "file.txt");
+        await File.WriteAllTextAsync(path, "base\n");
+        await service.StageFilesAsync(temporary.Path, ["file.txt"]);
+        await service.CommitAsync(temporary.Path, "base", Identity);
+        var baseId = (await service.GetSnapshotAsync(temporary.Path)).Head.CommitId;
+        await File.WriteAllTextAsync(path, "second\n");
+        await service.StageFilesAsync(temporary.Path, ["file.txt"]);
+        await service.CommitAsync(temporary.Path, "second", Identity);
+        var secondId = (await service.GetSnapshotAsync(temporary.Path)).Head.CommitId;
+
+        var checkout = await service.CheckoutCommitAsync(temporary.Path, baseId);
+
+        Assert.True(checkout.Success, checkout.ErrorMessage);
+        var detached = await service.GetSnapshotAsync(temporary.Path);
+        Assert.True(detached.Head.IsDetached);
+        Assert.Equal(baseId, detached.Head.CommitId);
+        Assert.Equal("base\n", (await File.ReadAllTextAsync(path)).Replace("\r\n", "\n"));
+
+        await File.WriteAllTextAsync(path, "dirty\n");
+        var blocked = await service.CheckoutCommitAsync(temporary.Path, secondId);
+        Assert.False(blocked.Success);
+        Assert.Contains("未提交修改", blocked.ErrorMessage);
+        Assert.Equal(baseId, (await service.GetSnapshotAsync(temporary.Path)).Head.CommitId);
+    }
+
+    [Fact]
+    public async Task RenameBranch_UpdatesPointerAndRejectsInvalidOrDuplicateNames()
+    {
+        using var temporary = new TemporaryDirectory();
+        var service = CreateService();
+        await service.InitializeAsync(temporary.Path, Identity);
+        await File.WriteAllTextAsync(Path.Combine(temporary.Path, "file.txt"), "base\n");
+        await service.StageFilesAsync(temporary.Path, ["file.txt"]);
+        await service.CommitAsync(temporary.Path, "base", Identity);
+        var tipId = (await service.GetSnapshotAsync(temporary.Path)).Head.CommitId;
+        Assert.True((await service.CreateBranchAsync(temporary.Path, "feature")).Success);
+
+        var renamed = await service.RenameBranchAsync(
+            temporary.Path, "feature", "topic/renamed");
+
+        Assert.True(renamed.Success, renamed.ErrorMessage);
+        var snapshot = await service.GetSnapshotAsync(temporary.Path);
+        Assert.DoesNotContain(snapshot.Branches, branch => branch.FriendlyName == "feature");
+        Assert.Equal(
+            tipId,
+            snapshot.Branches.Single(branch => branch.FriendlyName == "topic/renamed").TipId);
+
+        using (var repository = new Repository(temporary.Path))
+        {
+            repository.Config.Set("branch.main.remote", "origin", ConfigurationLevel.Local);
+            repository.Config.Set("branch.main.merge", "refs/heads/main", ConfigurationLevel.Local);
+        }
+        var currentRenamed = await service.RenameBranchAsync(
+            temporary.Path, "main", "trunk");
+        Assert.True(currentRenamed.Success, currentRenamed.ErrorMessage);
+        Assert.Equal("trunk", (await service.GetSnapshotAsync(temporary.Path)).Head.BranchName);
+        using (var repository = new Repository(temporary.Path))
+        {
+            Assert.Equal("origin", repository.Config.Get<string>("branch.trunk.remote")?.Value);
+            Assert.Equal("refs/heads/main", repository.Config.Get<string>("branch.trunk.merge")?.Value);
+            Assert.Null(repository.Config.Get<string>("branch.main.remote"));
+        }
+
+        Assert.True((await service.CreateBranchAsync(temporary.Path, "existing")).Success);
+        var duplicate = await service.RenameBranchAsync(
+            temporary.Path, "topic/renamed", "existing");
+        var invalid = await service.RenameBranchAsync(
+            temporary.Path, "topic/renamed", "bad name");
+        Assert.False(duplicate.Success);
+        Assert.Contains("已存在", duplicate.ErrorMessage);
+        Assert.False(invalid.Success);
+        Assert.Contains("命名规则", invalid.ErrorMessage);
+    }
+
+    [Fact]
     public async Task RemovingRemote_DeletesOnlyTheLocalRemoteConfiguration()
     {
         using var temporary = new TemporaryDirectory();

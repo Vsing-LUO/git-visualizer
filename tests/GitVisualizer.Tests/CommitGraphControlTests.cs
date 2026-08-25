@@ -74,6 +74,43 @@ public sealed class CommitGraphControlTests
         Assert.Null(failure);
     }
 
+    [Fact]
+    public void CollapsingGraphMovesCommitTextToTheLeadingEdge()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var graph = new CommitGraphControl
+                {
+                    Items = new ObservableCollection<CommitNode>(
+                        [CreateCommit("11111111", [])])
+                };
+                graph.Measure(new Size(800, double.PositiveInfinity));
+                graph.Arrange(new Rect(0, 0, 800, 100));
+                graph.UpdateLayout();
+                var expandedTextStart = graph.GetCommitTextStart();
+
+                graph.IsGraphCollapsed = true;
+                graph.UpdateLayout();
+
+                Assert.True(graph.GetCommitTextStart() < expandedTextStart);
+                Assert.Equal(12, graph.GetCommitTextStart());
+                Assert.Equal(0, graph.GetLaneForCommit("11111111"));
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        Assert.Null(failure);
+    }
+
     private static CommitNode CreateCommit(string id, IReadOnlyList<string> parents) =>
         new(
             id,

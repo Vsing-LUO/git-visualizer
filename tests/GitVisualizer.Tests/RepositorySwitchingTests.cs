@@ -61,6 +61,16 @@ public sealed class RepositorySwitchingTests
             viewModel.UnstagedChanges,
             change => change.Path == "内容.txt"));
         Assert.Equal(0, viewModel.SelectedRightTabIndex);
+        Assert.True(viewModel.ShowWorkingDiffCards);
+        Assert.NotEmpty(viewModel.DiffRegions);
+        Assert.True(viewModel.CanShowRawDiff);
+        Assert.False(viewModel.ShowRawDiff);
+        viewModel.ToggleRawDiff();
+        Assert.True(viewModel.ShowRawDiff);
+        Assert.Equal("返回易懂说明", viewModel.RawDiffToggleText);
+        await viewModel.SelectChangeAsync(null);
+        Assert.False(viewModel.ShowRawDiff);
+        Assert.False(viewModel.CanShowRawDiff);
 
         Assert.True(await viewModel.OpenRepositoryAsync(secondPath));
 
@@ -434,6 +444,57 @@ public sealed class RepositorySwitchingTests
         Assert.Contains("origin", viewModel.PullSourceText);
         Assert.Contains(viewModel.History, commit => commit.Message == "远程更新");
         Assert.True(File.Exists(Path.Combine(clonePath, "远程更新.txt")));
+    }
+
+    [Fact]
+    public async Task SelectedFiles_AreStagedAndUnstagedWithoutChangingOtherSelections()
+    {
+        using var temporary = new TemporaryDirectory();
+        var repositoryPath = Path.Combine(temporary.Path, "selected-files");
+        Directory.CreateDirectory(repositoryPath);
+        var log = new MemoryOperationLogStore();
+        var recovery = new RecoveryService();
+        var git = new LibGitRepositoryService(recovery, log);
+        await CreateRepositoryAsync(git, repositoryPath, "初始内容");
+        await File.WriteAllTextAsync(Path.Combine(repositoryPath, "第二个.txt"), "第二个初始内容");
+        Assert.True((await git.StageFilesAsync(repositoryPath, ["第二个.txt"])).Success);
+        Assert.True((await git.CommitAsync(repositoryPath, "增加第二个文件", Identity)).Success);
+        await File.WriteAllTextAsync(Path.Combine(repositoryPath, "内容.txt"), "只暂存这个修改");
+        await File.WriteAllTextAsync(Path.Combine(repositoryPath, "第二个.txt"), "保持未暂存");
+
+        using var viewModel = new MainWindowViewModel(
+            git,
+            new LibGitDiffService(),
+            new NoOpRepositoryWatcherFactory(),
+            new FileWorkspaceService(),
+            new WindowsShellNewFileService(),
+            new MemorySettingsStore(),
+            log,
+            recovery,
+            new MemoryCredentialVault());
+        Assert.True(await viewModel.OpenRepositoryAsync(repositoryPath));
+        var selected = Assert.Single(
+            viewModel.UnstagedChanges,
+            change => change.Path == "内容.txt");
+
+        var staged = await viewModel.StageSelectedFilesAsync([selected]);
+
+        Assert.NotNull(staged);
+        Assert.True(staged.Success, staged.ErrorMessage);
+        Assert.Contains(viewModel.StagedChanges, change => change.Path == "内容.txt");
+        Assert.Contains(viewModel.UnstagedChanges, change => change.Path == "第二个.txt");
+        Assert.DoesNotContain(viewModel.StagedChanges, change => change.Path == "第二个.txt");
+
+        var stagedSelection = Assert.Single(
+            viewModel.StagedChanges,
+            change => change.Path == "内容.txt");
+        var unstaged = await viewModel.UnstageSelectedFilesAsync([stagedSelection]);
+
+        Assert.NotNull(unstaged);
+        Assert.True(unstaged.Success, unstaged.ErrorMessage);
+        Assert.Empty(viewModel.StagedChanges);
+        Assert.Contains(viewModel.UnstagedChanges, change => change.Path == "内容.txt");
+        Assert.Contains(viewModel.UnstagedChanges, change => change.Path == "第二个.txt");
     }
 
     private static async Task CreateRepositoryAsync(

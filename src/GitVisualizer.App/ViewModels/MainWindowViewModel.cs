@@ -84,6 +84,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public ObservableCollection<OperationLogEntry> OperationLog { get; } = [];
     public ObservableCollection<ConflictFile> Conflicts { get; } = [];
     public ObservableCollection<DiffHunk> DiffHunks { get; } = [];
+    public ObservableCollection<DiffFilePresentation> DiffFiles { get; } = [];
+    public ObservableCollection<DiffRegionPresentation> DiffRegions { get; } = [];
     public ObservableCollection<string> Notices { get; } = [];
     public IReadOnlyList<string> RepositorySortModes { get; } =
         ["创建时间", "修改时间", "文件大小"];
@@ -97,9 +99,20 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private RemoteInfo? selectedRemote;
     [ObservableProperty] private string selectedHistoryBranchName = string.Empty;
     [ObservableProperty] private string historyContextText = "全部分支";
+    [ObservableProperty] private bool isCommitGraphCollapsed;
     [ObservableProperty] private string statusText = "拖入文件夹，或点击“打开仓库”开始";
     [ObservableProperty] private string commitMessage = string.Empty;
     [ObservableProperty] private string diffText = string.Empty;
+    [ObservableProperty] private string diffContextText = "工作区差异";
+    [ObservableProperty] private string diffSummaryText = "请选择一个有变化的文件。";
+    [ObservableProperty] private string diffRawText = string.Empty;
+    [ObservableProperty] private string rawDiffToggleText = "查看原始差异";
+    [ObservableProperty] private DiffFilePresentation? selectedDiffFile;
+    [ObservableProperty] private bool showRawDiff;
+    [ObservableProperty] private bool canShowRawDiff;
+    [ObservableProperty] private bool showWorkingDiffCards;
+    [ObservableProperty] private bool showCommitDiffCards;
+    [ObservableProperty] private bool showDiffEmptyState = true;
     [ObservableProperty] private string editorText = string.Empty;
     [ObservableProperty] private string detailsText = string.Empty;
     [ObservableProperty] private string equivalentCommand = string.Empty;
@@ -465,6 +478,49 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         await RefreshAsync();
     }
 
+    public async Task<GitOperationResult?> StageSelectedFilesAsync(
+        IReadOnlyList<FileChange> changes)
+    {
+        var paths = changes
+            .Where(change => !change.IsStaged && change.State != GitChangeState.Ignored)
+            .Select(change => change.Path)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (paths.Length == 0)
+        {
+            StatusText = "请先选择至少一个未暂存文件。";
+            return null;
+        }
+        if (HasUnsavedEditorChanges && paths.Any(IsCurrentDocument) &&
+            !await SaveCurrentDocumentAsync(refreshAfterSave: false))
+        {
+            return null;
+        }
+        var result = await git.StageFilesAsync(ActiveRepositoryPath, paths);
+        ShowResult(result);
+        await RefreshAsync();
+        return result;
+    }
+
+    public async Task<GitOperationResult?> UnstageSelectedFilesAsync(
+        IReadOnlyList<FileChange> changes)
+    {
+        var paths = changes
+            .Where(change => change.IsStaged)
+            .Select(change => change.Path)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (paths.Length == 0)
+        {
+            StatusText = "请先选择至少一个已暂存文件。";
+            return null;
+        }
+        var result = await git.UnstageFilesAsync(ActiveRepositoryPath, paths);
+        ShowResult(result);
+        await RefreshAsync();
+        return result;
+    }
+
     private async Task<bool> SaveCurrentDocumentAsync(bool refreshAfterSave)
     {
         if (CurrentDocument is null || !CanSaveCurrentDocument ||
@@ -760,28 +816,29 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public async Task SelectChangeAsync(FileChange? change)
     {
         SelectedChange = change;
-        DiffHunks.Clear();
-        HasDiffHunks = false;
+        ClearDiffPresentation();
         if (change is null)
         {
-            DiffText = string.Empty;
+            DiffContextText = "工作区差异";
             return;
         }
         SelectedRightTabIndex = DiffTabIndex;
         try
         {
-            DiffText = await diff.GetUnifiedDiffAsync(
+            var presentation = await diff.GetWorkingDiffPresentationAsync(
                 ActiveRepositoryPath, change.Path, change.IsStaged);
-            Replace(
-                DiffHunks,
-                await diff.GetWorkingDiffAsync(
-                    ActiveRepositoryPath, change.Path, change.IsStaged));
-            HasDiffHunks = DiffHunks.Count > 0;
-            await OpenFileAsync(Path.Combine(ActiveRepositoryPath, change.Path));
+            LoadDiffPresentation(presentation, isCommitComparison: false);
+            var fullPath = Path.Combine(ActiveRepositoryPath, change.Path);
+            if (File.Exists(fullPath))
+            {
+                await OpenFileAsync(fullPath);
+            }
         }
         catch (Exception exception)
         {
             DiffText = $"无法显示差异：{exception.Message}";
+            DiffSummaryText = DiffText;
+            ShowDiffEmptyState = true;
         }
     }
 
@@ -1207,6 +1264,108 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         return result;
     }
 
+    public async Task<GitOperationResult> RenameBranchAsync(BranchInfo branch, string newName)
+    {
+        var result = await git.RenameBranchAsync(
+            ActiveRepositoryPath,
+            branch.FriendlyName,
+            newName.Trim());
+        ShowResult(result);
+        await ReloadAllAsync();
+        return result;
+    }
+
+    public async Task<GitOperationResult> CheckoutSelectedCommitAsync()
+    {
+        if (SelectedCommit is null)
+        {
+            throw new InvalidOperationException("请先选择一个提交。");
+        }
+        var result = await git.CheckoutCommitAsync(ActiveRepositoryPath, SelectedCommit.Id);
+        ShowResult(result);
+        await ReloadAllAsync();
+        return result;
+    }
+
+    public async Task CompareCommitsAsync(CommitNode oldCommit, CommitNode newCommit)
+    {
+        ClearDiffPresentation();
+        SelectedChange = null;
+        SelectedRightTabIndex = DiffTabIndex;
+        try
+        {
+            var presentation = await diff.CompareCommitsPresentationAsync(
+                ActiveRepositoryPath,
+                oldCommit.Id,
+                newCommit.Id);
+            LoadDiffPresentation(presentation, isCommitComparison: true);
+            StatusText = $"已比较 {oldCommit.ShortId} 与 {newCommit.ShortId}";
+        }
+        catch (Exception exception)
+        {
+            DiffText = $"无法比较提交：{exception.Message}";
+            DiffSummaryText = DiffText;
+            ShowDiffEmptyState = true;
+            StatusText = "提交比较失败。";
+        }
+    }
+
+    public void ToggleRawDiff()
+    {
+        if (!CanShowRawDiff)
+        {
+            return;
+        }
+        ShowRawDiff = !ShowRawDiff;
+        RawDiffToggleText = ShowRawDiff ? "返回易懂说明" : "查看原始差异";
+    }
+
+    public Task<GitOperationResult> DiscardChangeAsync(FileChange change) =>
+        DiscardChangesAsync([change]);
+
+    public async Task<GitOperationResult> DiscardChangesAsync(
+        IReadOnlyList<FileChange> changes)
+    {
+        var paths = changes
+            .Where(change => !change.IsStaged)
+            .Select(change => change.Path)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (paths.Length == 0)
+        {
+            throw new InvalidOperationException("请从未暂存修改列表中选择至少一个要丢弃的文件。");
+        }
+
+        var currentFullPath = !currentDocumentIsHistorical && CurrentDocument is not null
+            ? Path.GetFullPath(CurrentDocument.Path)
+            : null;
+        var refreshEditor = currentFullPath is not null && paths.Any(path =>
+            Path.GetFullPath(Path.Combine(ActiveRepositoryPath, path)).Equals(
+                currentFullPath,
+                StringComparison.OrdinalIgnoreCase));
+        var result = await git.DiscardFilesAsync(ActiveRepositoryPath, paths);
+        ShowResult(result);
+        await RefreshAsync();
+        if (result.Success)
+        {
+            SelectedChange = null;
+            ClearDiffPresentation();
+            DiffContextText = "工作区差异";
+            if (refreshEditor && currentFullPath is not null)
+            {
+                if (File.Exists(currentFullPath))
+                {
+                    await OpenFileAsync(currentFullPath);
+                }
+                else
+                {
+                    ClearCurrentDocument();
+                }
+            }
+        }
+        return result;
+    }
+
     public async Task<GitOperationResult> ResolveSelectedBinaryConflictAsync(ConflictSide side)
     {
         if (SelectedConflict is not { IsBinary: true } conflict)
@@ -1453,6 +1612,67 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             credentialVault);
     }
 
+    private void LoadDiffPresentation(
+        DiffPresentation presentation,
+        bool isCommitComparison)
+    {
+        DiffFiles.Clear();
+        DiffRegions.Clear();
+        DiffHunks.Clear();
+        Replace(DiffFiles, presentation.Files);
+        SelectedDiffFile = presentation.Files.FirstOrDefault();
+        if (!isCommitComparison && SelectedDiffFile is not null)
+        {
+            Replace(DiffRegions, SelectedDiffFile.Regions);
+            Replace(
+                DiffHunks,
+                SelectedDiffFile.Regions
+                    .Select(region => region.SourceHunk)
+                    .OfType<DiffHunk>());
+        }
+
+        DiffContextText = presentation.Title;
+        DiffSummaryText = presentation.Summary;
+        DiffRawText = presentation.RawText;
+        DiffText = presentation.RawText;
+        HasDiffHunks = DiffHunks.Count > 0;
+        CanShowRawDiff = !string.IsNullOrWhiteSpace(DiffRawText);
+        ShowRawDiff = false;
+        RawDiffToggleText = "查看原始差异";
+        ShowWorkingDiffCards = !isCommitComparison && presentation.HasFiles;
+        ShowCommitDiffCards = isCommitComparison && presentation.HasFiles;
+        ShowDiffEmptyState = !presentation.HasFiles;
+    }
+
+    private void ClearDiffPresentation()
+    {
+        DiffFiles.Clear();
+        DiffRegions.Clear();
+        DiffHunks.Clear();
+        SelectedDiffFile = null;
+        DiffText = string.Empty;
+        DiffRawText = string.Empty;
+        DiffSummaryText = "请选择一个有变化的文件。";
+        HasDiffHunks = false;
+        CanShowRawDiff = false;
+        ShowRawDiff = false;
+        RawDiffToggleText = "查看原始差异";
+        ShowWorkingDiffCards = false;
+        ShowCommitDiffCards = false;
+        ShowDiffEmptyState = true;
+    }
+
+    private void ClearCurrentDocument()
+    {
+        CurrentDocument = null;
+        EditorText = string.Empty;
+        currentDocumentIsHistorical = false;
+        HasUnsavedEditorChanges = false;
+        IsExternalOnlyDocument = false;
+        CanSaveCurrentDocument = false;
+        CanOpenCurrentDocumentExternally = false;
+    }
+
     private static bool IsSsh(string url) =>
         url.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase) ||
         (url.Contains('@', StringComparison.Ordinal) && url.Contains(':', StringComparison.Ordinal));
@@ -1669,8 +1889,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         FileTree.Clear();
         OperationLog.Clear();
         Conflicts.Clear();
-        DiffHunks.Clear();
-        HasDiffHunks = false;
+        ClearDiffPresentation();
         SelectConflict(null);
         UpdateConflictState(RepositoryOperationState.None);
         Notices.Clear();
@@ -1687,7 +1906,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         CanModifyFileTree = true;
         FileTreeContextText = "工作区";
         fileTreeLoadVersion++;
-        DiffText = string.Empty;
         EditorText = string.Empty;
         DetailsText = string.Empty;
         ConflictBaseText = string.Empty;

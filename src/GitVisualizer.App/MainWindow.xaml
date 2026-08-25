@@ -55,7 +55,13 @@
                 <MenuItem Header="恢复中心…" Click="RecoveryCenter_OnClick" IsEnabled="{Binding HasRepository}"/>
             </MenuItem>
             <MenuItem Header="分支">
+                <MenuItem Header="重命名所选分支…" Click="RenameBranch_OnClick" IsEnabled="{Binding HasRepository}"/>
+                <Separator/>
                 <MenuItem Header="变基当前分支…" Click="Rebase_OnClick" IsEnabled="{Binding HasRepository}"/>
+            </MenuItem>
+            <MenuItem Header="历史">
+                <MenuItem Header="切换到所选提交…" Click="CheckoutCommit_OnClick" IsEnabled="{Binding HasRepository}"/>
+                <MenuItem Header="比较两个提交…" Click="CompareCommits_OnClick" IsEnabled="{Binding HasRepository}"/>
             </MenuItem>
             <MenuItem Header="远程">
                 <MenuItem Header="拉取所选远程…" Click="Pull_OnClick" IsEnabled="{Binding HasRepository}"/>
@@ -109,13 +115,13 @@
             </DockPanel>
         </Border>
 
-        <Grid Grid.Row="2">
+        <Grid Grid.Row="2" ClipToBounds="True">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="255" MinWidth="190" MaxWidth="420"/>
                 <ColumnDefinition Width="5"/>
                 <ColumnDefinition Width="*" MinWidth="420"/>
                 <ColumnDefinition Width="5"/>
-                <ColumnDefinition Width="400" MinWidth="300"/>
+                <ColumnDefinition Width="400" MinWidth="300" MaxWidth="720"/>
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="{StaticResource PanelBrush}">
@@ -186,6 +192,7 @@
                         <ListBox.ContextMenu>
                             <ContextMenu>
                                 <MenuItem Header="合并到当前分支" Click="MergeBranch_OnClick"/>
+                                <MenuItem Header="重命名该分支…" Click="RenameBranch_OnClick"/>
                                 <Separator/>
                                 <MenuItem Header="删除该分支…" Click="DeleteBranch_OnClick"/>
                             </ContextMenu>
@@ -276,17 +283,94 @@
                     <RowDefinition Height="42"/>
                 </Grid.RowDefinitions>
                 <DockPanel Margin="10,4">
+                    <TextBlock DockPanel.Dock="Right" Text="点击节点查看详情；右键区域执行历史操作"
+                               FontSize="11" Opacity="0.55" VerticalAlignment="Center"/>
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                         <TextBlock Text="{DynamicResource Section.History}" FontSize="16" FontWeight="SemiBold"
                                    VerticalAlignment="Center"/>
-                        <Border Margin="8,0,0,0" Padding="8,2"
-                                CornerRadius="9" Background="#182D8CFF">
+                        <Border Margin="8,0,0,0" Padding="10,0"
+                                Height="26" MinWidth="66"
+                                VerticalAlignment="Center"
+                                CornerRadius="10" Background="#182D8CFF">
                             <TextBlock Text="{Binding HistoryContextText}"
-                                       FontSize="10.5" Foreground="#FF2578C8"/>
+                                       FontSize="10.5" Foreground="#FF2578C8"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       TextAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"/>
                         </Border>
+                        <ToggleButton IsChecked="{Binding IsCommitGraphCollapsed, Mode=TwoWay}"
+                                      Width="30" Height="28"
+                                      Margin="6,0,0,0"
+                                      Padding="5"
+                                      VerticalAlignment="Center"
+                                      AutomationProperties.Name="切换关系图显示">
+                            <ToggleButton.Style>
+                                <Style TargetType="ToggleButton">
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="BorderBrush" Value="Transparent"/>
+                                    <Setter Property="BorderThickness" Value="1"/>
+                                    <Setter Property="Cursor" Value="Hand"/>
+                                    <Setter Property="ToolTip" Value="收起关系图"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ToggleButton">
+                                                <Border x:Name="ButtonChrome"
+                                                        Background="{TemplateBinding Background}"
+                                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                                        CornerRadius="5">
+                                                    <ContentPresenter HorizontalAlignment="Center"
+                                                                      VerticalAlignment="Center"/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ButtonChrome" Property="Background" Value="#12000000"/>
+                                                        <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#28000000"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsKeyboardFocused" Value="True">
+                                                        <Setter TargetName="ButtonChrome" Property="BorderBrush"
+                                                                Value="{StaticResource AccentBrush}"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsChecked" Value="True">
+                                                        <Setter TargetName="ButtonChrome" Property="Background" Value="#145B8CFF"/>
+                                                        <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#405B8CFF"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                    <Style.Triggers>
+                                        <Trigger Property="IsChecked" Value="True">
+                                            <Setter Property="ToolTip" Value="展开关系图"/>
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ToggleButton.Style>
+                            <Grid Width="18" Height="16" IsHitTestVisible="False">
+                                <Border BorderBrush="#FF4B5563" BorderThickness="1.4"
+                                        CornerRadius="4"/>
+                                <Border Width="4" Height="10" Margin="3,0,0,0"
+                                        HorizontalAlignment="Left" VerticalAlignment="Center"
+                                        Background="#704B5563" CornerRadius="1">
+                                    <Border.Style>
+                                        <Style TargetType="Border">
+                                            <Setter Property="Opacity" Value="1"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+                                                             Value="True">
+                                                    <Setter Property="Opacity" Value="0.25"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+                                </Border>
+                                <Rectangle Width="1" Height="11" Margin="8,0,0,0"
+                                           HorizontalAlignment="Left" VerticalAlignment="Center"
+                                           Fill="#FF4B5563"/>
+                            </Grid>
+                        </ToggleButton>
                     </StackPanel>
-                    <TextBlock DockPanel.Dock="Right" Text="点击节点查看详情；右键区域执行历史操作"
-                               FontSize="11" Opacity="0.55" VerticalAlignment="Center"/>
                 </DockPanel>
                 <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto"
                               VerticalScrollBarVisibility="Auto">
@@ -295,6 +379,7 @@
                                                  Tags="{Binding Tags}"
                                                  Events="{Binding HistoryEvents}"
                                                  Head="{Binding Head}"
+                                                 IsGraphCollapsed="{Binding IsCommitGraphCollapsed}"
                                                  SelectedBranchName="{Binding SelectedHistoryBranchName}"
                                                  SelectedCommit="{Binding SelectedCommit, Mode=TwoWay}"
                                                  CommitSelected="CommitGraph_OnCommitSelected"
@@ -304,26 +389,147 @@
                         Command="{Binding LoadMoreHistoryCommand}" HorizontalAlignment="Center"/>
             </Grid>
 
-            <GridSplitter Grid.Column="3" Width="5" HorizontalAlignment="Stretch"/>
+            <GridSplitter Grid.Column="3"
+                          Width="5"
+                          HorizontalAlignment="Stretch"
+                          ResizeDirection="Columns"
+                          ResizeBehavior="PreviousAndNext"
+                          DragIncrement="2"
+                          KeyboardIncrement="16"
+                          Cursor="SizeWE"
+                          Background="{StaticResource SubtleBorderBrush}"
+                          ToolTip="左右拖动可调整详情区域宽度"/>
 
             <TabControl Grid.Column="4"
+                        ClipToBounds="True"
                         SelectedIndex="{Binding SelectedRightTabIndex, Mode=TwoWay}">
                 <TabItem Header="{DynamicResource Tab.Diff}">
+                    <TabItem.Resources>
+                        <DataTemplate x:Key="DiffRegionTemplate">
+                            <Border Margin="4" Padding="10"
+                                    MinWidth="540"
+                                    BorderBrush="{StaticResource SubtleBorderBrush}"
+                                    BorderThickness="1" CornerRadius="7">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding LocationText}"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource AccentBrush}"/>
+                                    <ItemsControl Margin="0,7,0,0" ItemsSource="{Binding Blocks}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,0,7" Padding="8"
+                                                        Background="{StaticResource PanelBrush}"
+                                                        CornerRadius="5">
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold"/>
+                                                        <TextBlock Margin="0,2,0,6" Text="{Binding Description}"
+                                                                   FontSize="10.5" Opacity="0.62" TextWrapping="Wrap"/>
+                                                        <Grid Margin="0,0,0,3">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="260"/>
+                                                                <ColumnDefinition Width="8"/>
+                                                                <ColumnDefinition Width="260"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Text="{Binding DataContext.OldLabel, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                       FontSize="10.5" FontWeight="SemiBold"/>
+                                                            <TextBlock Grid.Column="2"
+                                                                       Text="{Binding DataContext.NewLabel, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                       FontSize="10.5"
+                                                                       FontWeight="SemiBold"/>
+                                                        </Grid>
+                                                        <ItemsControl ItemsSource="{Binding Rows}">
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <Grid Margin="0,1">
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="260"/>
+                                                                            <ColumnDefinition Width="8"/>
+                                                                            <ColumnDefinition Width="260"/>
+                                                                        </Grid.ColumnDefinitions>
+                                                                        <Border Padding="6,4" CornerRadius="3">
+                                                                            <Border.Style>
+                                                                                <Style TargetType="Border">
+                                                                                    <Setter Property="Background" Value="#14D84A4A"/>
+                                                                                    <Style.Triggers>
+                                                                                        <DataTrigger Binding="{Binding IsContext}" Value="True">
+                                                                                            <Setter Property="Background" Value="#0E6B7280"/>
+                                                                                        </DataTrigger>
+                                                                                        <DataTrigger Binding="{Binding HasOldLine}" Value="False">
+                                                                                            <Setter Property="Background" Value="#0E6B7280"/>
+                                                                                        </DataTrigger>
+                                                                                    </Style.Triggers>
+                                                                                </Style>
+                                                                            </Border.Style>
+                                                                            <StackPanel>
+                                                                                <TextBlock Text="{Binding OldLineLabel}"
+                                                                                           FontSize="9.5" Opacity="0.55"/>
+                                                                                <TextBlock Text="{Binding OldDisplayText}"
+                                                                                           FontFamily="Cascadia Mono,Consolas"
+                                                                                           FontSize="11" TextWrapping="NoWrap"/>
+                                                                                <TextBlock Text="{Binding OldAnnotation}"
+                                                                                           FontSize="9.5" Foreground="#FFC47A00"/>
+                                                                            </StackPanel>
+                                                                        </Border>
+                                                                        <Border Grid.Column="2" Padding="6,4" CornerRadius="3">
+                                                                            <Border.Style>
+                                                                                <Style TargetType="Border">
+                                                                                    <Setter Property="Background" Value="#1428A745"/>
+                                                                                    <Style.Triggers>
+                                                                                        <DataTrigger Binding="{Binding IsContext}" Value="True">
+                                                                                            <Setter Property="Background" Value="#0E6B7280"/>
+                                                                                        </DataTrigger>
+                                                                                        <DataTrigger Binding="{Binding HasNewLine}" Value="False">
+                                                                                            <Setter Property="Background" Value="#0E6B7280"/>
+                                                                                        </DataTrigger>
+                                                                                    </Style.Triggers>
+                                                                                </Style>
+                                                                            </Border.Style>
+                                                                            <StackPanel>
+                                                                                <TextBlock Text="{Binding NewLineLabel}"
+                                                                                           FontSize="9.5" Opacity="0.55"/>
+                                                                                <TextBlock Text="{Binding NewDisplayText}"
+                                                                                           FontFamily="Cascadia Mono,Consolas"
+                                                                                           FontSize="11" TextWrapping="NoWrap"/>
+                                                                                <TextBlock Text="{Binding NewAnnotation}"
+                                                                                           FontSize="9.5" Foreground="#FFC47A00"/>
+                                                                            </StackPanel>
+                                                                        </Border>
+                                                                    </Grid>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </TabItem.Resources>
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
-                        <DockPanel Margin="7" Visibility="{Binding HasDiffHunks, Converter={StaticResource BoolToVisibility}}">
+                        <DockPanel Margin="7">
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button Content="{Binding RawDiffToggleText}" Padding="12,4"
+                                        Click="ToggleRawDiff_OnClick"
+                                        Visibility="{Binding CanShowRawDiff, Converter={StaticResource BoolToVisibility}}"/>
                                 <Button Content="暂存所选块" Padding="12,4" Click="StageSelectedHunks_OnClick">
                                     <Button.Style>
                                         <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
                                             <Setter Property="Visibility" Value="Collapsed"/>
                                             <Style.Triggers>
-                                                <DataTrigger Binding="{Binding SelectedChange.IsStaged}" Value="False">
+                                                <MultiDataTrigger>
+                                                    <MultiDataTrigger.Conditions>
+                                                        <Condition Binding="{Binding HasDiffHunks}" Value="True"/>
+                                                        <Condition Binding="{Binding SelectedChange.IsStaged}" Value="False"/>
+                                                    </MultiDataTrigger.Conditions>
                                                     <Setter Property="Visibility" Value="Visible"/>
-                                                </DataTrigger>
+                                                </MultiDataTrigger>
                                             </Style.Triggers>
                                         </Style>
                                     </Button.Style>
@@ -333,57 +539,139 @@
                                         <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
                                             <Setter Property="Visibility" Value="Collapsed"/>
                                             <Style.Triggers>
-                                                <DataTrigger Binding="{Binding SelectedChange.IsStaged}" Value="True">
+                                                <MultiDataTrigger>
+                                                    <MultiDataTrigger.Conditions>
+                                                        <Condition Binding="{Binding HasDiffHunks}" Value="True"/>
+                                                        <Condition Binding="{Binding SelectedChange.IsStaged}" Value="True"/>
+                                                    </MultiDataTrigger.Conditions>
                                                     <Setter Property="Visibility" Value="Visible"/>
-                                                </DataTrigger>
+                                                </MultiDataTrigger>
                                             </Style.Triggers>
                                         </Style>
                                     </Button.Style>
                                 </Button>
                             </StackPanel>
-                            <TextBlock Text="按 Ctrl 或 Shift 可多选差异块" VerticalAlignment="Center" Opacity="0.62"/>
+                            <TextBlock Text="{Binding DiffContextText}" VerticalAlignment="Center"
+                                       FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                         </DockPanel>
-                        <ListBox x:Name="HunkList" Grid.Row="1" ItemsSource="{Binding DiffHunks}"
-                                 SelectionMode="Extended" BorderThickness="0"
-                                 ScrollViewer.HorizontalScrollBarVisibility="Auto">
-                            <ListBox.Style>
-                                <Style TargetType="ListBox">
-                                    <Setter Property="Visibility" Value="Visible"/>
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding HasDiffHunks}" Value="False">
-                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </ListBox.Style>
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <Border Margin="4" Padding="8" BorderBrush="{StaticResource SubtleBorderBrush}"
-                                            BorderThickness="1" CornerRadius="5">
-                                        <StackPanel>
-                                            <TextBlock Text="{Binding Header}" FontFamily="Cascadia Mono,Consolas"
-                                                       FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}"/>
-                                            <TextBlock Margin="0,5,0,0" Text="{Binding Preview}"
-                                                       FontFamily="Cascadia Mono,Consolas" FontSize="11"/>
-                                        </StackPanel>
-                                    </Border>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                        <TextBox Grid.Row="1" Text="{Binding DiffText}" FontFamily="Cascadia Mono,Consolas"
-                                 FontSize="12" IsReadOnly="True" AcceptsReturn="True"
-                                 HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                            <TextBox.Style>
-                                <Style TargetType="TextBox">
-                                    <Setter Property="Visibility" Value="Collapsed"/>
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding HasDiffHunks}" Value="False">
-                                            <Setter Property="Visibility" Value="Visible"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBox.Style>
-                        </TextBox>
+                        <Border Grid.Row="1" Margin="7,0,7,5" Padding="8,6"
+                                Background="{StaticResource PanelBrush}" CornerRadius="5">
+                            <TextBlock Text="{Binding DiffSummaryText}" TextWrapping="Wrap"/>
+                        </Border>
+                        <Grid Grid.Row="2" ClipToBounds="True">
+                            <Grid x:Name="WorkingDiffCards">
+                                <Grid.Style>
+                                    <Style TargetType="Grid">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding ShowWorkingDiffCards}" Value="True"/>
+                                                    <Condition Binding="{Binding ShowRawDiff}" Value="False"/>
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </MultiDataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Grid.Style>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <Border Margin="7,2,7,4" Padding="9"
+                                        BorderBrush="{StaticResource SubtleBorderBrush}"
+                                        BorderThickness="1" CornerRadius="6"
+                                        DataContext="{Binding SelectedDiffFile}">
+                                    <StackPanel>
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Right" Text="{Binding StatusText}"
+                                                       FontSize="10.5" Opacity="0.62"/>
+                                            <TextBlock Text="{Binding DisplayPath}" FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </DockPanel>
+                                        <TextBlock Margin="0,3,0,0" Text="{Binding Summary}"
+                                                   FontSize="10.5" TextWrapping="Wrap"/>
+                                        <ItemsControl Margin="0,3,0,0" ItemsSource="{Binding Notices}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding}" FontSize="10.5"
+                                                               Foreground="#FFC47A00" TextWrapping="Wrap"/>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
+                                <ListBox x:Name="HunkList" Grid.Row="1" ItemsSource="{Binding DiffRegions}"
+                                         ItemTemplate="{StaticResource DiffRegionTemplate}"
+                                         SelectionMode="Extended" BorderThickness="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                         ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                            </Grid>
+                            <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                                          VerticalScrollBarVisibility="Auto">
+                                <ScrollViewer.Style>
+                                    <Style TargetType="ScrollViewer">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding ShowCommitDiffCards}" Value="True"/>
+                                                    <Condition Binding="{Binding ShowRawDiff}" Value="False"/>
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </MultiDataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ScrollViewer.Style>
+                                <ItemsControl Margin="5" ItemsSource="{Binding DiffFiles}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Expander Margin="2,2,2,7" IsExpanded="False">
+                                                <Expander.Header>
+                                                    <Border MinWidth="520" Padding="9">
+                                                        <StackPanel>
+                                                            <DockPanel>
+                                                                <TextBlock DockPanel.Dock="Right" Text="{Binding StatusText}"
+                                                                           FontSize="10.5" Opacity="0.62"/>
+                                                                <TextBlock Text="{Binding DisplayPath}" FontWeight="SemiBold"/>
+                                                            </DockPanel>
+                                                            <TextBlock Margin="0,3,0,0" Text="{Binding Summary}"
+                                                                       FontSize="10.5" TextWrapping="Wrap"/>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </Expander.Header>
+                                                <StackPanel>
+                                                    <ItemsControl Margin="8,0" ItemsSource="{Binding Notices}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <TextBlock Text="{Binding}" FontSize="10.5"
+                                                                           Foreground="#FFC47A00" TextWrapping="Wrap"/>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                    <ItemsControl ItemsSource="{Binding Regions}"
+                                                                  ItemTemplate="{StaticResource DiffRegionTemplate}"/>
+                                                </StackPanel>
+                                            </Expander>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                            <TextBox Text="{Binding DiffRawText}" FontFamily="Cascadia Mono,Consolas"
+                                     FontSize="12" IsReadOnly="True" AcceptsReturn="True"
+                                     HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                                <TextBox.Style>
+                                    <Style TargetType="TextBox">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding ShowRawDiff}" Value="True">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBox.Style>
+                            </TextBox>
+                        </Grid>
                     </Grid>
                 </TabItem>
                 <TabItem Header="{DynamicResource Tab.Editor}">
@@ -456,12 +744,90 @@
                         </Grid.RowDefinitions>
                         <TextBox Text="{Binding DetailsText}" IsReadOnly="True" AcceptsReturn="True"
                                  TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
-                        <WrapPanel Grid.Row="1" HorizontalAlignment="Right">
-                            <Button Content="从此提交创建分支" Click="CreateBranch_OnClick"/>
-                            <Button Content="拣选此提交" Click="CherryPick_OnClick"/>
-                            <Button Content="撤销此提交" Click="Revert_OnClick"/>
-                            <Button Content="将当前分支回退到此版本…" Click="Reset_OnClick"/>
-                        </WrapPanel>
+                        <Border Grid.Row="1" Margin="0,8,0,0" Padding="8"
+                                Background="{StaticResource PanelBrush}"
+                                BorderBrush="{StaticResource SubtleBorderBrush}"
+                                BorderThickness="1" CornerRadius="7">
+                            <Border.Resources>
+                                <Style x:Key="CommitActionButton" TargetType="Button"
+                                       BasedOn="{StaticResource {x:Type Button}}">
+                                    <Setter Property="MinHeight" Value="48"/>
+                                    <Setter Property="Margin" Value="4"/>
+                                    <Setter Property="Padding" Value="8,5"/>
+                                    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                                </Style>
+                            </Border.Resources>
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <DockPanel Margin="5,1,5,5">
+                                    <TextBlock DockPanel.Dock="Right" Text="先选择提交，再选择操作"
+                                               FontSize="10.5" Opacity="0.5" VerticalAlignment="Center"/>
+                                    <TextBlock Text="所选提交操作" FontWeight="SemiBold"
+                                               VerticalAlignment="Center"/>
+                                </DockPanel>
+                                <UniformGrid Grid.Row="1" Columns="3" Rows="2">
+                                    <Button Style="{StaticResource CommitActionButton}"
+                                            Click="CreateBranch_OnClick"
+                                            ToolTip="从所选提交创建一个新的本地分支">
+                                        <StackPanel>
+                                            <TextBlock Text="创建分支" HorizontalAlignment="Center"/>
+                                            <TextBlock Text="保留此版本" FontSize="10" Opacity="0.55"
+                                                       HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Style="{StaticResource CommitActionButton}"
+                                            Click="CompareCommits_OnClick"
+                                            Background="{StaticResource AccentBrush}" Foreground="White"
+                                            ToolTip="选择另一个提交并查看文件差异">
+                                        <StackPanel>
+                                            <TextBlock Text="比较提交" HorizontalAlignment="Center"/>
+                                            <TextBlock Text="查看文件差异" FontSize="10" Opacity="0.75"
+                                                       HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Style="{StaticResource CommitActionButton}"
+                                            Click="CheckoutCommit_OnClick"
+                                            ToolTip="切换到所选提交并进入游离 HEAD">
+                                        <StackPanel>
+                                            <TextBlock Text="切换提交" HorizontalAlignment="Center"/>
+                                            <TextBlock Text="进入游离 HEAD" FontSize="10" Opacity="0.55"
+                                                       HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Style="{StaticResource CommitActionButton}"
+                                            Click="CherryPick_OnClick"
+                                            ToolTip="把所选提交应用到当前分支">
+                                        <StackPanel>
+                                            <TextBlock Text="拣选提交" HorizontalAlignment="Center"/>
+                                            <TextBlock Text="应用到当前分支" FontSize="10" Opacity="0.55"
+                                                       HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Style="{StaticResource CommitActionButton}"
+                                            Click="Revert_OnClick"
+                                            ToolTip="创建新提交来撤销所选提交">
+                                        <StackPanel>
+                                            <TextBlock Text="撤销提交" HorizontalAlignment="Center"/>
+                                            <TextBlock Text="生成反向提交" FontSize="10" Opacity="0.55"
+                                                       HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Style="{StaticResource CommitActionButton}"
+                                            Click="Reset_OnClick"
+                                            Foreground="{StaticResource DangerBrush}"
+                                            ToolTip="将当前分支回退到所选提交">
+                                        <StackPanel>
+                                            <TextBlock Text="回退分支…" HorizontalAlignment="Center"/>
+                                            <TextBlock Text="移动当前分支" FontSize="10" Opacity="0.65"
+                                                       HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+                                </UniformGrid>
+                            </Grid>
+                        </Border>
                     </Grid>
                 </TabItem>
                 <TabItem Header="冲突">
@@ -940,59 +1306,152 @@
                       Background="{StaticResource SubtleBorderBrush}"
                       ToolTip="上下拖动可调整暂存功能区高度"/>
 
-        <Border Grid.Row="4" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="0,1,0,0">
+        <Border Grid.Row="4" BorderBrush="{StaticResource SectionDividerBrush}"
+                BorderThickness="0,2,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="360"/>
                 </Grid.ColumnDefinitions>
-                <Grid>
+                <Border BorderBrush="{StaticResource SectionDividerBrush}" BorderThickness="0,0,1,0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="46"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <Border Background="{StaticResource SectionHeaderBrush}"
+                                BorderBrush="{StaticResource SectionDividerBrush}"
+                                BorderThickness="0,0,0,1">
+                            <DockPanel Margin="8,4">
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button Content="丢弃所选…"
+                                            Click="DiscardChange_OnClick"
+                                            Margin="4,0,0,0" VerticalAlignment="Center"
+                                            ToolTip="恢复所选文件到暂存区版本；未跟踪文件会被删除，操作前会创建恢复点"/>
+                                    <Button Content="暂存所选"
+                                            Click="StageSelectedFiles_OnClick"
+                                            Margin="4,0,0,0" VerticalAlignment="Center"
+                                            ToolTip="仅暂存当前选中的文件；若相关编辑器内容未保存，将先保存"/>
+                                    <CheckBox x:Name="SelectAllUnstagedCheckBox"
+                                              Width="18" Height="18" Margin="8,0,2,0"
+                                              VerticalAlignment="Center"
+                                              Click="SelectAllUnstaged_OnClick"
+                                              ToolTip="选择或取消选择全部未暂存文件"
+                                              AutomationProperties.Name="选择全部未暂存文件"/>
+                                </StackPanel>
+                                <TextBlock Text="{DynamicResource Section.Unstaged}"
+                                           FontSize="14" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"/>
+                            </DockPanel>
+                        </Border>
+                        <Grid Grid.Row="1" ClipToBounds="True">
+                            <ListBox x:Name="UnstagedList"
+                                     Margin="4,4,4,6" BorderThickness="0"
+                                     ItemsSource="{Binding UnstagedChanges}"
+                                     ItemTemplate="{StaticResource ChangeTemplate}"
+                                     SelectionMode="Extended"
+                                     SelectionChanged="ChangeList_OnSelectionChanged"
+                                     PreviewMouseLeftButtonDown="ChangeList_OnPreviewMouseLeftButtonDown"
+                                     PreviewMouseRightButtonDown="ChangeList_OnPreviewMouseRightButtonDown"
+                                     PreviewMouseRightButtonUp="ChangeList_OnPreviewMouseRightButtonUp"
+                                     PreviewMouseMove="ChangeList_OnPreviewMouseMove"
+                                     AllowDrop="True" Drop="UnstagedList_OnDrop">
+                                <ListBox.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Header="丢弃所选文件的未暂存修改…" Click="DiscardChange_OnClick"/>
+                                    </ContextMenu>
+                                </ListBox.ContextMenu>
+                            </ListBox>
+                            <Canvas x:Name="UnstagedSelectionOverlay" IsHitTestVisible="False" ClipToBounds="True">
+                                <Rectangle x:Name="UnstagedSelectionRectangle"
+                                           Visibility="Collapsed"
+                                           Fill="#285B8CFF" Stroke="{StaticResource AccentBrush}"
+                                           StrokeThickness="1" StrokeDashArray="3,2"/>
+                            </Canvas>
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Column="1" BorderBrush="{StaticResource SectionDividerBrush}"
+                        BorderThickness="0,0,1,0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="46"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <Border Background="{StaticResource SectionHeaderBrush}"
+                                BorderBrush="{StaticResource SectionDividerBrush}"
+                                BorderThickness="0,0,0,1">
+                            <DockPanel Margin="8,4">
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button Content="取消所选"
+                                            Click="UnstageSelectedFiles_OnClick"
+                                            Margin="4,0,0,0" VerticalAlignment="Center"
+                                            ToolTip="仅取消暂存当前选中的文件"/>
+                                    <CheckBox x:Name="SelectAllStagedCheckBox"
+                                              Width="18" Height="18" Margin="8,0,2,0"
+                                              VerticalAlignment="Center"
+                                              Click="SelectAllStaged_OnClick"
+                                              ToolTip="选择或取消选择全部已暂存文件"
+                                              AutomationProperties.Name="选择全部已暂存文件"/>
+                                </StackPanel>
+                                <TextBlock Text="{DynamicResource Section.Staged}"
+                                           FontSize="14" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"/>
+                            </DockPanel>
+                        </Border>
+                        <Grid Grid.Row="1" ClipToBounds="True">
+                            <ListBox x:Name="StagedList"
+                                     Margin="4,4,4,6" BorderThickness="0"
+                                     ItemsSource="{Binding StagedChanges}"
+                                     ItemTemplate="{StaticResource ChangeTemplate}"
+                                     SelectionMode="Extended"
+                                     SelectionChanged="ChangeList_OnSelectionChanged"
+                                     PreviewMouseLeftButtonDown="ChangeList_OnPreviewMouseLeftButtonDown"
+                                     PreviewMouseRightButtonDown="ChangeList_OnPreviewMouseRightButtonDown"
+                                     PreviewMouseRightButtonUp="ChangeList_OnPreviewMouseRightButtonUp"
+                                     PreviewMouseMove="ChangeList_OnPreviewMouseMove"
+                                     AllowDrop="True" Drop="StagedList_OnDrop"/>
+                            <Canvas x:Name="StagedSelectionOverlay" IsHitTestVisible="False" ClipToBounds="True">
+                                <Rectangle x:Name="StagedSelectionRectangle"
+                                           Visibility="Collapsed"
+                                           Fill="#285B8CFF" Stroke="{StaticResource AccentBrush}"
+                                           StrokeThickness="1" StrokeDashArray="3,2"/>
+                            </Canvas>
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <Grid x:Name="CommitPanel" Grid.Column="2"
+                      SizeChanged="CommitPanel_OnSizeChanged">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="36"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-                    <DockPanel Margin="8,3">
-                        <Button DockPanel.Dock="Right" Content="全部暂存" Command="{Binding StageAllCommand}"
-                                ToolTip="若编辑器有未保存内容，将先保存再暂存"/>
-                        <TextBlock Text="{DynamicResource Section.Unstaged}" FontWeight="SemiBold"
-                                   VerticalAlignment="Center"/>
-                    </DockPanel>
-                    <ListBox x:Name="UnstagedList" Grid.Row="1" ItemsSource="{Binding UnstagedChanges}"
-                             ItemTemplate="{StaticResource ChangeTemplate}"
-                             SelectionChanged="ChangeList_OnSelectionChanged"
-                             PreviewMouseLeftButtonDown="ChangeList_OnPreviewMouseLeftButtonDown"
-                             PreviewMouseMove="ChangeList_OnPreviewMouseMove"
-                             AllowDrop="True" Drop="UnstagedList_OnDrop"/>
-                </Grid>
-                <Grid Grid.Column="1">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="36"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-                    <DockPanel Margin="8,3">
-                        <Button DockPanel.Dock="Right" Content="全部取消" Command="{Binding UnstageAllCommand}"/>
-                        <TextBlock Text="{DynamicResource Section.Staged}" FontWeight="SemiBold"
-                                   VerticalAlignment="Center"/>
-                    </DockPanel>
-                    <ListBox x:Name="StagedList" Grid.Row="1" ItemsSource="{Binding StagedChanges}"
-                             ItemTemplate="{StaticResource ChangeTemplate}"
-                             SelectionChanged="ChangeList_OnSelectionChanged"
-                             PreviewMouseLeftButtonDown="ChangeList_OnPreviewMouseLeftButtonDown"
-                             PreviewMouseMove="ChangeList_OnPreviewMouseMove"
-                             AllowDrop="True" Drop="StagedList_OnDrop"/>
-                </Grid>
-                <Grid Grid.Column="2" Margin="10">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="46"/>
+                        <RowDefinition x:Name="CommitMessageRow" Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
-                    <TextBox Text="{Binding CommitMessage, UpdateSourceTrigger=PropertyChanged}"
+                    <Border Background="{StaticResource SectionHeaderBrush}"
+                            BorderBrush="{StaticResource SectionDividerBrush}"
+                            BorderThickness="0,0,0,1">
+                        <DockPanel Margin="12,4">
+                            <TextBlock x:Name="CommitMessageHint"
+                                       DockPanel.Dock="Right" Text="填写说明后提交"
+                                       FontSize="10.5" Opacity="0.5" VerticalAlignment="Center"/>
+                            <TextBlock Text="提交" FontSize="14" FontWeight="SemiBold"
+                                       VerticalAlignment="Center"/>
+                        </DockPanel>
+                    </Border>
+                    <TextBox x:Name="CommitMessageTextBox"
+                             Grid.Row="1" Margin="10,8,10,4"
+                             Text="{Binding CommitMessage, UpdateSourceTrigger=PropertyChanged}"
                              AcceptsReturn="True" TextWrapping="Wrap"
                              VerticalScrollBarVisibility="Auto"
                              ToolTip="{DynamicResource Hint.CommitMessage}"/>
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Content="修改上一提交" Command="{Binding AmendCommand}"/>
+                    <StackPanel Grid.Row="2" Margin="7,0,7,6"
+                                Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="修订最新提交"
+                                Command="{Binding AmendCommand}"
+                                ToolTip="用当前提交说明和已暂存内容替换当前分支的最新提交"/>
                         <Button Content="{DynamicResource Action.Commit}" Command="{Binding CommitCommand}"
                                 Background="{StaticResource AccentBrush}" Foreground="White"/>
                     </StackPanel>

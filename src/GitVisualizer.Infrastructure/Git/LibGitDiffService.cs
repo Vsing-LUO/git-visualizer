@@ -7,6 +7,57 @@ namespace GitVisualizer.Infrastructure.Git;
 
 public sealed class LibGitDiffService : IDiffService
 {
+    public Task<DiffPresentation> GetWorkingDiffPresentationAsync(
+        string repositoryPath,
+        string path,
+        bool staged,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var repository = new Repository(repositoryPath);
+            var patch = GetPatch(repository, path, staged);
+            var hunks = UnifiedDiffParser.Parse(
+                path,
+                patch,
+                staged,
+                ComputeSnapshot(repository, path));
+            var oldLabel = staged ? "最近提交" : "暂存区";
+            var newLabel = staged ? "暂存区" : "工作区";
+            return NaturalLanguageDiffParser.Parse(
+                patch,
+                $"{oldLabel} → {newLabel}",
+                oldLabel,
+                newLabel,
+                hunks,
+                path);
+        }, cancellationToken);
+
+    public Task<DiffPresentation> CompareCommitsPresentationAsync(
+        string repositoryPath,
+        string oldCommitId,
+        string newCommitId,
+        string? path = null,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var repository = new Repository(repositoryPath);
+            var oldCommit = repository.Lookup<Commit>(oldCommitId)
+                            ?? throw new ArgumentException("旧提交不存在。");
+            var newCommit = repository.Lookup<Commit>(newCommitId)
+                            ?? throw new ArgumentException("新提交不存在。");
+            var patch = GetCommitPatch(repository, oldCommit.Tree, newCommit.Tree, path);
+            var oldLabel = $"旧提交 {oldCommit.Id.Sha[..8]}";
+            var newLabel = $"新提交 {newCommit.Id.Sha[..8]}";
+            return NaturalLanguageDiffParser.Parse(
+                patch,
+                $"{oldLabel} → {newLabel}",
+                oldLabel,
+                newLabel,
+                fallbackPath: path);
+        }, cancellationToken);
+
     public Task<IReadOnlyList<DiffHunk>> GetWorkingDiffAsync(
         string repositoryPath,
         string path,
@@ -50,8 +101,11 @@ public sealed class LibGitDiffService : IDiffService
                             ?? throw new ArgumentException("旧提交不存在。");
             var newCommit = repository.Lookup<Commit>(newCommitId)
                             ?? throw new ArgumentException("新提交不存在。");
-            var paths = path is null ? null : new[] { path };
-            return repository.Diff.Compare<Patch>(oldCommit.Tree, newCommit.Tree, paths).Content;
+            var patch = GetCommitPatch(repository, oldCommit.Tree, newCommit.Tree, path);
+            return GitPatchDisplayFormatter.FormatCommitComparison(
+                patch,
+                oldCommit.Id.Sha,
+                newCommit.Id.Sha);
         }, cancellationToken);
 
     internal static string GetPatch(Repository repository, string path, bool staged)
@@ -67,6 +121,19 @@ public sealed class LibGitDiffService : IDiffService
         {
             patch = repository.Diff.Compare<Patch>(paths, true);
         }
+        return patch.Content;
+    }
+
+    private static string GetCommitPatch(
+        Repository repository,
+        Tree oldTree,
+        Tree newTree,
+        string? path)
+    {
+        var options = new CompareOptions { Similarity = SimilarityOptions.Renames };
+        var patch = path is null
+            ? repository.Diff.Compare<Patch>(oldTree, newTree, options)
+            : repository.Diff.Compare<Patch>(oldTree, newTree, [path], options);
         return patch.Content;
     }
 

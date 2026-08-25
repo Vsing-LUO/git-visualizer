@@ -14,21 +14,13 @@ namespace GitVisualizer.App;
 public partial class App : Application
 {
     private ServiceProvider? serviceProvider;
+    private int unhandledErrorDialogVisible;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         DiagnosticLog.Initialize();
-        DispatcherUnhandledException += (_, args) =>
-        {
-            DiagnosticLog.Write("Dispatcher", args.Exception);
-            MessageBox.Show(
-                "应用遇到未处理错误，诊断信息已保存在本机日志目录。\n\n" + args.Exception.Message,
-                "Git 可视化",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-            args.Handled = true;
-        };
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
         {
             if (args.ExceptionObject is Exception exception)
@@ -68,5 +60,53 @@ public partial class App : Application
     {
         serviceProvider?.Dispose();
         base.OnExit(e);
+    }
+
+    private void OnDispatcherUnhandledException(
+        object sender,
+        System.Windows.Threading.DispatcherUnhandledExceptionEventArgs args)
+    {
+        args.Handled = true;
+        if (Interlocked.Exchange(ref unhandledErrorDialogVisible, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            try
+            {
+                DiagnosticLog.Write("Dispatcher", args.Exception);
+            }
+            catch
+            {
+                // The error dialog must still remain usable if writing the diagnostic log fails.
+            }
+
+            var message =
+                "应用遇到未处理错误，诊断信息已保存在本机日志目录。\n\n" +
+                args.Exception.Message;
+            if (MainWindow is { } owner)
+            {
+                MessageBox.Show(
+                    owner,
+                    message,
+                    "Git 可视化",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
+            else
+            {
+                MessageBox.Show(
+                    message,
+                    "Git 可视化",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref unhandledErrorDialogVisible, 0);
+        }
     }
 }

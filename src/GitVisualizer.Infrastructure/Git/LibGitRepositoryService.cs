@@ -472,24 +472,51 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         var command = $"git restore -- {string.Join(' ', paths.Select(GitServiceSupport.Quote))}";
         return ExecuteWriteAsync(repositoryPath, "discard", command, GitOperationRisk.Dangerous, true, paths, repository =>
         {
-            var tracked = paths.Where(path => repository.RetrieveStatus(path) != FileStatus.NewInWorkdir).ToArray();
-            if (tracked.Length > 0)
+            if (repository.Info.IsBare)
             {
-                repository.CheckoutPaths(repository.Head.FriendlyName, tracked, new CheckoutOptions
-                {
-                    CheckoutModifiers = CheckoutModifiers.Force
-                });
+                throw new InvalidOperationException("裸仓库没有可丢弃的工作区修改。");
             }
 
-            foreach (var path in paths.Except(tracked, StringComparer.OrdinalIgnoreCase))
+            var normalizedPaths = paths
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(path => NormalizeWorkTreePath(repository, path))
+                .DistinctBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (normalizedPaths.Length == 0)
             {
-                var fullPath = Path.GetFullPath(Path.Combine(repository.Info.WorkingDirectory, path));
-                if (File.Exists(fullPath))
-                {
-                    File.Delete(fullPath);
-                }
+                throw new ArgumentException("请至少选择一个要丢弃修改的文件。", nameof(paths));
             }
-            return GitOperationResult.Ok("discard", $"已放弃 {paths.Count} 个文件的修改", command, paths);
+
+            foreach (var (relativePath, fullPath) in normalizedPaths)
+            {
+                var indexEntry = repository.Index[relativePath];
+                if (indexEntry is null)
+                {
+                    DeleteWorkTreeFile(fullPath);
+                    continue;
+                }
+
+                if (indexEntry.Mode == Mode.GitLink)
+                {
+                    throw new InvalidOperationException($"子模块路径不能作为普通文件丢弃：{relativePath}");
+                }
+
+                var blob = repository.Lookup<Blob>(indexEntry.Id)
+                           ?? throw new InvalidOperationException($"无法读取暂存区中的文件内容：{relativePath}");
+                Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+                PrepareFileForOverwrite(fullPath);
+                using var source = blob.GetContentStream(new FilteringOptions(relativePath));
+                using var destination = new FileStream(fullPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+                source.CopyTo(destination);
+            }
+
+            var discardedPaths = normalizedPaths.Select(item => item.RelativePath).ToArray();
+            return GitOperationResult.Ok(
+                "discard",
+                $"已丢弃 {discardedPaths.Length} 个文件的未暂存修改",
+                command,
+                discardedPaths,
+                ["已暂存内容保持不变；操作前状态已保存在恢复中心。"]);
         }, cancellationToken: cancellationToken);
     }
 
@@ -580,6 +607,10 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             repository =>
             {
                 EnsureClean(repository);
+                if (string.IsNullOrWhiteSpace(commitId))
+                {
+                    throw new ArgumentException("提交 ID 不能为空。", nameof(commitId));
+                }
                 var commit = repository.Lookup<Commit>(commitId)
                              ?? throw new ArgumentException("提交不存在。", nameof(commitId));
                 var oldHeadId = repository.Head.Tip?.Id.Sha ?? string.Empty;
@@ -597,13 +628,44 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         string repositoryPath, string oldName, string newName,
         CancellationToken cancellationToken = default)
     {
+        oldName = oldName.Trim();
+        newName = newName.Trim();
         var command = $"git branch -m {GitServiceSupport.Quote(oldName)} {GitServiceSupport.Quote(newName)}";
         return ExecuteWriteAsync(repositoryPath, "branch-rename", command, GitOperationRisk.Caution, false, null,
             repository =>
             {
-                var branch = repository.Branches[oldName] ?? throw new ArgumentException("分支不存在。");
-                repository.Branches.Rename(branch, newName);
-                return GitOperationResult.Ok("branch-rename", $"分支已重命名为 {newName}", command);
+                if (string.IsNullOrWhiteSpace(oldName))
+                {
+                    throw new ArgumentException("原分支名不能为空。", nameof(oldName));
+                }
+                if (string.IsNullOrWhiteSpace(newName) ||
+                    !Reference.IsValidName($"refs/heads/{newName}"))
+                {
+                    throw new ArgumentException("新分支名不符合 Git 引用命名规则。", nameof(newName));
+                }
+
+                var branch = repository.Branches[oldName]
+                             ?? throw new ArgumentException("分支不存在。", nameof(oldName));
+                if (branch.IsRemote)
+                {
+                    throw new InvalidOperationException("不能重命名远程跟踪分支。");
+                }
+                if (string.Equals(oldName, newName, StringComparison.Ordinal))
+                {
+                    throw new ArgumentException("新分支名必须与原分支名不同。", nameof(newName));
+                }
+                if (repository.Branches[newName] is not null)
+                {
+                    throw new InvalidOperationException($"分支 {newName} 已存在。");
+                }
+
+                var tipId = branch.Tip?.Id.Sha ?? string.Empty;
+                var renamed = repository.Branches.Rename(branch, newName);
+                return GitOperationResult.Ok(
+                    "branch-rename",
+                    $"分支 {oldName} 已重命名为 {renamed.FriendlyName}",
+                    command,
+                    [oldName, renamed.FriendlyName, tipId]);
             }, cancellationToken: cancellationToken);
     }
 
@@ -1509,6 +1571,56 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             throw new InvalidOperationException(
                 "工作区存在已暂存或未暂存的未提交修改，请先提交或处理这些修改。");
         }
+    }
+
+    private static (string RelativePath, string FullPath) NormalizeWorkTreePath(
+        Repository repository,
+        string path)
+    {
+        if (Path.IsPathRooted(path))
+        {
+            throw new ArgumentException("文件路径必须是仓库内的相对路径。", nameof(path));
+        }
+
+        var relativePath = path.Replace('\\', '/').TrimStart('/');
+        if (relativePath.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+            relativePath.StartsWith(".git/", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("不能丢弃 Git 元数据目录中的文件。", nameof(path));
+        }
+
+        var normalizedRoot = Path.GetFullPath(repository.Info.WorkingDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
+            Path.DirectorySeparatorChar;
+        var fullPath = Path.GetFullPath(Path.Combine(normalizedRoot, relativePath));
+        if (!fullPath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("文件路径越出仓库工作区。", nameof(path));
+        }
+
+        return (relativePath, fullPath);
+    }
+
+    private static void PrepareFileForOverwrite(string fullPath)
+    {
+        if (Directory.Exists(fullPath))
+        {
+            throw new IOException($"目标路径是目录，无法恢复为文件：{fullPath}");
+        }
+        if (File.Exists(fullPath))
+        {
+            File.SetAttributes(fullPath, FileAttributes.Normal);
+        }
+    }
+
+    private static void DeleteWorkTreeFile(string fullPath)
+    {
+        if (!File.Exists(fullPath))
+        {
+            return;
+        }
+        File.SetAttributes(fullPath, FileAttributes.Normal);
+        File.Delete(fullPath);
     }
 
     private static string PreserveStash(Repository repository, int index)
