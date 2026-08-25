@@ -150,6 +150,8 @@ public sealed record DiffLinePair(
 {
     public bool HasOldLine => OldLine is not null;
     public bool HasNewLine => NewLine is not null;
+    public bool OldIsPlaceholder => OldLine is null || OldLine.Text.Length == 0;
+    public bool NewIsPlaceholder => NewLine is null || NewLine.Text.Length == 0;
     public string OldLineLabel => OldLine?.LineLabel ?? string.Empty;
     public string NewLineLabel => NewLine?.LineLabel ?? string.Empty;
     public string OldDisplayText => OldLine?.DisplayText ?? "（无对应行）";
