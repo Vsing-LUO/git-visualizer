@@ -8,6 +8,38 @@ namespace GitVisualizer.Tests;
 public sealed class CommitGraphControlTests
 {
     [Fact]
+    public void DesiredWidthTracksTheAvailableViewportWidth()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var graph = new CommitGraphControl
+                {
+                    Items = new ObservableCollection<CommitNode>(
+                        [CreateCommit("11111111", [])])
+                };
+
+                graph.Measure(new Size(420, double.PositiveInfinity));
+                Assert.Equal(420, graph.DesiredSize.Width);
+
+                graph.Measure(new Size(760, double.PositiveInfinity));
+                Assert.Equal(760, graph.DesiredSize.Width);
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        Assert.Null(failure);
+    }
+
+    [Fact]
     public void CollectionChangesRebuildTheGraphLayout()
     {
         Exception? failure = null;
@@ -96,8 +128,103 @@ public sealed class CommitGraphControlTests
                 graph.UpdateLayout();
 
                 Assert.True(graph.GetCommitTextStart() < expandedTextStart);
-                Assert.Equal(12, graph.GetCommitTextStart());
+                Assert.Equal(52, graph.GetCommitTextStart());
                 Assert.Equal(0, graph.GetLaneForCommit("11111111"));
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        Assert.Null(failure);
+    }
+
+    [Fact]
+    public void CollapsedGraphRendersEveryCommitOnOnePrimaryLane()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var baseCommit = CreateCommit("aaaaaaaa", []);
+                var mainCommit = CreateCommit("bbbbbbbb", [baseCommit.Id]);
+                var featureCommit = CreateCommit("cccccccc", [baseCommit.Id]);
+                var mergeCommit = CreateCommit(
+                    "dddddddd",
+                    [mainCommit.Id, featureCommit.Id]);
+                var graph = new CommitGraphControl
+                {
+                    Items = new ObservableCollection<CommitNode>(
+                        [mergeCommit, mainCommit, featureCommit, baseCommit]),
+                    IsGraphCollapsed = true
+                };
+
+                Assert.All(
+                    graph.Items,
+                    commit => Assert.Equal(
+                        0,
+                        graph.GetRenderedLaneForCommit(commit.Id)));
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        Assert.Null(failure);
+    }
+
+    [Fact]
+    public void CommitTextDistanceIsOneHalfOfPreviousSpacingFromFarthestLane()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var baseCommit = CreateCommit("aaaaaaaa", []);
+                var mainCommit = CreateCommit("bbbbbbbb", [baseCommit.Id]);
+                var firstBranch = CreateCommit("cccccccc", [baseCommit.Id]);
+                var secondBranch = CreateCommit("dddddddd", [baseCommit.Id]);
+                var thirdBranch = CreateCommit("eeeeeeee", [baseCommit.Id]);
+                var mergeCommit = CreateCommit(
+                    "ffffffff",
+                    [
+                        mainCommit.Id,
+                        firstBranch.Id,
+                        secondBranch.Id,
+                        thirdBranch.Id
+                    ]);
+                var graph = new CommitGraphControl
+                {
+                    Items = new ObservableCollection<CommitNode>(
+                        [
+                            mergeCommit,
+                            mainCommit,
+                            firstBranch,
+                            secondBranch,
+                            thirdBranch,
+                            baseCommit
+                        ]),
+                    Head = new HeadInfo(mergeCommit.Id, "main", false)
+                };
+
+                Assert.Equal(3, graph.GetLaneForCommit(thirdBranch.Id));
+
+                const double farthestLaneX = 22 + 3 * 28;
+                const double previousTextStart = 22 + 4 * 28 + 24;
+                var expectedTextStart = farthestLaneX +
+                    (previousTextStart - farthestLaneX) / 2;
+
+                Assert.Equal(expectedTextStart, graph.GetCommitTextStart(), 10);
             }
             catch (Exception exception)
             {

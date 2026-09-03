@@ -40,6 +40,7 @@ public sealed class RecoveryService : IRecoveryService
             }
 
             var archivePath = Path.Combine(LocalPaths.RecoveryDirectory, id + ".zip");
+            var temporaryArchivePath = archivePath + $".{Guid.NewGuid():N}.tmp";
             var changedPaths = repository.RetrieveStatus(new StatusOptions
             {
                 IncludeUntracked = true,
@@ -52,43 +53,59 @@ public sealed class RecoveryService : IRecoveryService
             var manifest = new RecoveryManifest(
                 id, repositoryPath, operation, headId, reference, DateTimeOffset.UtcNow, paths);
 
-            await using (var archiveStream = File.Create(archivePath))
-            using (var archive = new ZipArchive(archiveStream, ZipArchiveMode.Create))
+            try
             {
-                var manifestEntry = archive.CreateEntry("manifest.json", CompressionLevel.Fastest);
-                await using (var manifestStream = manifestEntry.Open())
+                await using (var archiveStream = File.Create(temporaryArchivePath))
+                using (var archive = new ZipArchive(archiveStream, ZipArchiveMode.Create))
                 {
-                    await JsonSerializer.SerializeAsync(
-                            manifestStream, manifest, JsonOptions, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-
-                foreach (var relativePath in paths)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var fullPath = Path.GetFullPath(Path.Combine(repository.Info.WorkingDirectory, relativePath));
-                    if (!IsWithin(repository.Info.WorkingDirectory, fullPath) || !File.Exists(fullPath))
+                    var manifestEntry = archive.CreateEntry("manifest.json", CompressionLevel.Fastest);
+                    await using (var manifestStream = manifestEntry.Open())
                     {
-                        continue;
+                        await JsonSerializer.SerializeAsync(
+                                manifestStream, manifest, JsonOptions, cancellationToken)
+                            .ConfigureAwait(false);
                     }
 
-                    var entry = archive.CreateEntry(
-                        "files/" + relativePath.Replace('\\', '/'), CompressionLevel.Fastest);
-                    await using var input = File.OpenRead(fullPath);
-                    await using var output = entry.Open();
-                    await input.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
-                }
+                    foreach (var relativePath in paths)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var fullPath = Path.GetFullPath(Path.Combine(repository.Info.WorkingDirectory, relativePath));
+                        if (!IsWithin(repository.Info.WorkingDirectory, fullPath) || !File.Exists(fullPath))
+                        {
+                            continue;
+                        }
 
-                var indexPath = repository.Info.Path is null
-                    ? null
-                    : Path.Combine(repository.Info.Path, "index");
-                if (indexPath is not null && File.Exists(indexPath))
-                {
-                    var indexEntry = archive.CreateEntry("git-index", CompressionLevel.Fastest);
-                    await using var input = File.OpenRead(indexPath);
-                    await using var output = indexEntry.Open();
-                    await input.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
+                        var entry = archive.CreateEntry(
+                            "files/" + relativePath.Replace('\\', '/'), CompressionLevel.Fastest);
+                        await using var input = File.OpenRead(fullPath);
+                        await using var output = entry.Open();
+                        await input.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    var indexPath = repository.Info.Path is null
+                        ? null
+                        : Path.Combine(repository.Info.Path, "index");
+                    if (indexPath is not null && File.Exists(indexPath))
+                    {
+                        var indexEntry = archive.CreateEntry("git-index", CompressionLevel.Fastest);
+                        await using var input = File.OpenRead(indexPath);
+                        await using var output = indexEntry.Open();
+                        await input.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
+                    }
                 }
+                File.Move(temporaryArchivePath, archivePath);
+            }
+            catch
+            {
+                if (File.Exists(temporaryArchivePath))
+                {
+                    File.Delete(temporaryArchivePath);
+                }
+                if (repository.Refs[reference] is not null)
+                {
+                    repository.Refs.Remove(reference);
+                }
+                throw;
             }
 
             var info = new FileInfo(archivePath);
@@ -322,9 +339,81 @@ public sealed class RecoveryService : IRecoveryService
         }
     }
 
+    public async Task<GitOperationResult> DeleteAsync(
+        RecoveryPoint point,
+        CancellationToken cancellationToken = default)
+    {
+        await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!File.Exists(point.ArchivePath))
+            {
+                return GitOperationResult.Fail(
+                    "recovery-delete", "delete recovery point",
+                    new FileNotFoundException("恢复归档不存在。", point.ArchivePath));
+            }
+
+            await DeleteArchiveAndReferenceAsync(
+                new FileInfo(point.ArchivePath), cancellationToken).ConfigureAwait(false);
+            return GitOperationResult.Ok(
+                "recovery-delete", $"已删除恢复点 {point.Id}", "delete recovery point");
+        }
+        catch (Exception exception)
+        {
+            return GitOperationResult.Fail("recovery-delete", "delete recovery point", exception);
+        }
+        finally
+        {
+            Gate.Release();
+        }
+    }
+
+    public async Task PruneRepositoryReferencesAsync(
+        string repositoryPath,
+        CancellationToken cancellationToken = default)
+    {
+        repositoryPath = Path.GetFullPath(repositoryPath);
+        await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await RetryPendingReferenceCleanupAsync(repositoryPath, cancellationToken)
+                .ConfigureAwait(false);
+            if (!Repository.IsValid(repositoryPath))
+            {
+                return;
+            }
+
+            var retainedRecoveryReferences = await ReadManifestsAsync(cancellationToken)
+                .ConfigureAwait(false);
+            var retained = retainedRecoveryReferences
+                .Where(manifest => PathsEqual(manifest.RepositoryPath, repositoryPath))
+                .Select(manifest => manifest.ReferenceName)
+                .ToHashSet(StringComparer.Ordinal);
+
+            using var repository = new Repository(repositoryPath);
+            foreach (var reference in repository.Refs
+                         .Where(reference => reference.CanonicalName.StartsWith(
+                             "refs/gitvisualizer/recovery/", StringComparison.Ordinal))
+                         .ToArray())
+            {
+                if (!retained.Contains(reference.CanonicalName))
+                {
+                    repository.Refs.Remove(reference.CanonicalName);
+                }
+            }
+
+            PruneSafetyCategory(repository, "stash-backup");
+            PruneSafetyCategory(repository, "remote-recovery");
+        }
+        finally
+        {
+            Gate.Release();
+        }
+    }
+
     private static async Task PruneCoreAsync(CancellationToken cancellationToken)
     {
-        await Task.Yield();
+        await RetryPendingReferenceCleanupAsync(null, cancellationToken).ConfigureAwait(false);
         var files = Directory.EnumerateFiles(LocalPaths.RecoveryDirectory, "*.zip")
             .Select(path => new FileInfo(path))
             .OrderByDescending(info => info.LastWriteTimeUtc)
@@ -339,7 +428,7 @@ public sealed class RecoveryService : IRecoveryService
             var overSize = retainedBytes + info.Length > MaxTotalBytes;
             if (expired || overCount || overSize)
             {
-                File.Delete(info.FullName);
+                await DeleteArchiveAndReferenceAsync(info, cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -347,6 +436,143 @@ public sealed class RecoveryService : IRecoveryService
             }
         }
     }
+
+    private static async Task DeleteArchiveAndReferenceAsync(
+        FileInfo info,
+        CancellationToken cancellationToken)
+    {
+        var manifest = await ReadManifestAsync(info.FullName, cancellationToken).ConfigureAwait(false);
+        File.Delete(info.FullName);
+        if (manifest is null || string.IsNullOrWhiteSpace(manifest.ReferenceName))
+        {
+            return;
+        }
+
+        try
+        {
+            RemoveReference(manifest);
+        }
+        catch
+        {
+            var pending = Path.Combine(LocalPaths.RecoveryDirectory, manifest.Id + ".cleanup");
+            await File.WriteAllTextAsync(
+                pending,
+                JsonSerializer.Serialize(manifest, JsonOptions),
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static void RemoveReference(RecoveryManifest manifest)
+    {
+        if (!manifest.ReferenceName.StartsWith("refs/gitvisualizer/recovery/", StringComparison.Ordinal) ||
+            !Repository.IsValid(manifest.RepositoryPath))
+        {
+            return;
+        }
+
+        using var repository = new Repository(manifest.RepositoryPath);
+        if (repository.Refs[manifest.ReferenceName] is not null)
+        {
+            repository.Refs.Remove(manifest.ReferenceName);
+        }
+    }
+
+    private static async Task RetryPendingReferenceCleanupAsync(
+        string? repositoryPath,
+        CancellationToken cancellationToken)
+    {
+        LocalPaths.EnsureCreated();
+        foreach (var path in Directory.EnumerateFiles(LocalPaths.RecoveryDirectory, "*.cleanup"))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var json = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+                var manifest = JsonSerializer.Deserialize<RecoveryManifest>(json, JsonOptions);
+                if (manifest is null ||
+                    (repositoryPath is not null && !PathsEqual(manifest.RepositoryPath, repositoryPath)))
+                {
+                    continue;
+                }
+                RemoveReference(manifest);
+                File.Delete(path);
+            }
+            catch (JsonException)
+            {
+                File.Delete(path);
+            }
+            catch (IOException)
+            {
+                // Leave the cleanup record for the next repository open or prune pass.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Leave the cleanup record for the next repository open or prune pass.
+            }
+        }
+    }
+
+    private static async Task<IReadOnlyList<RecoveryManifest>> ReadManifestsAsync(
+        CancellationToken cancellationToken)
+    {
+        var manifests = new List<RecoveryManifest>();
+        foreach (var path in Directory.EnumerateFiles(LocalPaths.RecoveryDirectory, "*.zip"))
+        {
+            var manifest = await ReadManifestAsync(path, cancellationToken).ConfigureAwait(false);
+            if (manifest is not null)
+            {
+                manifests.Add(manifest);
+            }
+        }
+        return manifests;
+    }
+
+    private static async Task<RecoveryManifest?> ReadManifestAsync(
+        string archivePath,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var archive = ZipFile.OpenRead(archivePath);
+            var entry = archive.GetEntry("manifest.json");
+            if (entry is null)
+            {
+                return null;
+            }
+            await using var stream = entry.Open();
+            return await JsonSerializer.DeserializeAsync<RecoveryManifest>(
+                stream, JsonOptions, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidDataException)
+        {
+            return null;
+        }
+    }
+
+    private static void PruneSafetyCategory(Repository repository, string category)
+    {
+        var prefix = $"refs/gitvisualizer/{category}/";
+        var references = repository.Refs
+            .Where(reference => reference.CanonicalName.StartsWith(prefix, StringComparison.Ordinal))
+            .OrderByDescending(reference => reference.CanonicalName, StringComparer.Ordinal)
+            .ToArray();
+        for (var index = 0; index < references.Length; index++)
+        {
+            var name = references[index].CanonicalName;
+            var token = name[prefix.Length..].Split('-', 2)[0];
+            var expired = DateTimeOffset.TryParseExact(
+                token, "yyyyMMddHHmmssfff", null,
+                System.Globalization.DateTimeStyles.AssumeUniversal, out var createdAt) &&
+                DateTimeOffset.UtcNow - createdAt > MaxAge;
+            if (index >= MaxPoints || expired)
+            {
+                repository.Refs.Remove(name);
+            }
+        }
+    }
+
+    private static bool PathsEqual(string first, string second) =>
+        Path.GetFullPath(first).Equals(Path.GetFullPath(second), StringComparison.OrdinalIgnoreCase);
 
     private static bool IsWithin(string root, string path)
     {

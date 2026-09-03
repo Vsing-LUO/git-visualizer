@@ -42,6 +42,13 @@ public static partial class GitRemoteAddress
                 return false;
             }
 
+            if ((uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                 uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) &&
+                !string.IsNullOrEmpty(uri.UserInfo))
+            {
+                return false;
+            }
+
             if (!uri.IsFile && string.IsNullOrWhiteSpace(uri.Host))
             {
                 return false;

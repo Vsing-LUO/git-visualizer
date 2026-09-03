@@ -1,102 +1,61 @@
-# Git 可视化
+# GitVisualizer
 
-一个面向 Windows 的中文 Git 桌面客户端。界面以提交关系图为中心，通过文件拖放、差异块暂存和安全操作预览完成日常 Git 工作流。
+GitVisualizer 是一个面向 Windows 的中文 Git 桌面客户端。界面以提交关系图为中心，支持文件与差异块暂存、分支与标签管理、远程同步、冲突处理、安全恢复和内置文本编辑。
 
-## 开发运行
+当前版本：`1.3.2`
 
-要求 Windows 10/11 x64 和 .NET 10 SDK。
+## 开发环境
 
-```powershell
-dotnet restore
-dotnet build -c Release
-dotnet test -c Release
-dotnet run --project src/GitVisualizer.App
-```
+- Windows 10/11 x64
+- .NET SDK 10.0.302（由 `global.json` 锁定）
+- Git for Windows（仅开发和诊断需要；应用主要使用 LibGit2Sharp）
 
-应用不依赖系统 Git，也不会自动上传诊断数据。当前源码仓库只使用本地 Git，不配置远程地址。
-
-若当前终端尚未刷新用户 `PATH`，可直接运行本项目安装的 SDK：
+依赖通过 NuGet 还原，仓库不包含 SDK、运行时、离线包缓存或编译产物。
 
 ```powershell
-& "$env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" run --project src/GitVisualizer.App
+dotnet restore GitVisualizer.slnx
+dotnet build GitVisualizer.slnx --configuration Release --no-restore
+dotnet test tests/GitVisualizer.Tests/GitVisualizer.Tests.csproj `
+  --configuration Release --no-build
 ```
 
-## 发布可直接双击的 Windows 版本
+## 运行与发布
 
-使用自包含发布配置生成 Windows x64 单文件版本，目标电脑不需要另外安装 .NET：
+开发运行：
 
 ```powershell
-& "$env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" publish `
-  src/GitVisualizer.App/GitVisualizer.App.csproj `
-  -p:PublishProfile=win-x64-self-contained
+dotnet run --project src/GitVisualizer.App/GitVisualizer.App.csproj
 ```
 
-发布完成后直接双击：
+生成 Windows x64 自包含单文件程序：
 
-```text
-artifacts\publish\win-x64\GitVisualizer.exe
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Build-CurrentDark.ps1
 ```
 
-## V1 功能
+输出位置：`artifacts\publish\win-x64\GitVisualizer.exe`。
 
-- 打开、初始化和克隆仓库
-- 工作区状态、文件与差异块暂存
-- 提交、分支、标签、stash 和提交关系图
-- merge、rebase、cherry-pick、revert、reset
-- HTTPS/SSH 远程同步、推送目标选择、远程配置管理和推送过程监视
-- 冲突查看与安全恢复点
-- 内置轻量文本编辑器和常用文件操作
+生成安装程序前请先完成上述发布，然后安装 Inno Setup 6 或 7 并运行：
 
-## v1.1.0 安全工作流
-
-- 顶部菜单接通标签创建/删除、stash 保存/应用/弹出/删除和 rebase
-- fetch、pull、push 明确使用界面中选择的远程；pull 还会明确选择远程分支
-- `force-with-lease` 在服务器上传前原子校验本地已知远程提交，不会隐式 fetch，并要求输入当前分支名确认
-- stash 弹出/删除与强制推送前创建隐藏安全引用，危险操作仍保留自动恢复点
-- 二进制冲突禁止进入文本写回路径，避免把二进制内容损坏为文本
-
-修改前的可用版本保存在 Git 标签 `v1.0.0-baseline`，本机自包含程序位于：
-
-```text
-artifacts\releases\v1.0.0-baseline\GitVisualizer.exe
-```
-
-v1.1.0 自包含程序位于：
-
-```text
-artifacts\releases\v1.1.0\GitVisualizer.exe
-```
-
-## v1.2.0 完整工作流
-
-- 差异页支持使用 Ctrl/Shift 多选并暂存或取消暂存多个差异块；操作前校验索引和工作区快照，避免把过期差异应用到新内容
-- 差异默认以中文卡片解释修改前后内容、行号、文件状态和比较方向；长行支持左右限位同步横向滚动，需要排障时可切换查看原始 Git diff
-- 未暂存和已暂存列表支持 Ctrl/Shift 多选、标题复选框全选及鼠标右键拖框选择；“暂存所选”“取消所选”和“丢弃所选”只处理选中的文件
-- 丢弃修改前自动创建恢复点；同一文件已有暂存内容时，仅恢复工作区，不改写暂存区
-- 分支列表支持重命名本地分支；提交详情支持切换到游离 HEAD，并可选择任意两个已加载提交查看定向差异
-- 仓库菜单新增恢复中心；恢复前自动保护当前现场，并在独立的 `recovered/...` 分支恢复当时的工作区与暂存区
-- 二进制冲突可安全采用 ours、theirs 或当前工作区文件；Git Blob 以原始字节复制，不经过文本编码
-- 延续 v1.1.0 的标签、stash、rebase、多远程选择和真实 `force-with-lease` 工作流
-
-v1.2.0 自包含程序位于：
-
-```text
-artifacts\releases\v1.2.0\GitVisualizer.exe
+```powershell
+powershell -ExecutionPolicy Bypass -File .\installer\Build-Installer.ps1
 ```
 
 ## 项目结构
 
-- `GitVisualizer.App`：WPF 中文界面、MVVM、提交图、编辑器和对话框
-- `GitVisualizer.Core`：领域模型及 Git、差异、恢复、凭据等核心接口
-- `GitVisualizer.Infrastructure`：LibGit2Sharp、SQLite、文件系统、恢复点和 Windows Credential Manager
-- `GitVisualizer.Tests`：临时仓库集成测试与文件安全测试
+- `src/GitVisualizer.App`：WPF 界面、视图模型、对话框和编辑器交互
+- `src/GitVisualizer.Core`：领域模型与核心接口
+- `src/GitVisualizer.Infrastructure`：Git、SQLite、文件系统、恢复和凭据实现
+- `tests/GitVisualizer.Tests`：集成测试、WPF 测试和安全工作流测试
+- `installer`：Inno Setup 安装脚本及卸载入口源码
+- `docs`：依赖、开发环境和版本说明
 
-## 本地数据与远程认证
+v1.3.2 的 App 层源码来自最终验证版本的源码重建快照；Core、Infrastructure 和测试工程来自同一冻结版本。仓库保留此前版本的提交历史和标签。
 
-设置、操作历史、恢复点及按天滚动的诊断日志保存在
-`%LocalAppData%\GitVisualizer`。诊断日志保留 14 天并过滤 Token、口令、
-私钥及 URL 内嵌凭据。
+## 本地数据与安全
 
-HTTPS 支持用户名和 PAT；凭据保存在 Windows Credential Manager。SSH
-通过 Windows SSH Agent 使用已经载入的私钥，并在界面中明确提示用户先将
-密钥加入 Agent，不会静默接受未知主机。
+设置、操作历史、恢复点及按天滚动的诊断日志保存在 `%LocalAppData%\GitVisualizer`。HTTPS 凭据保存在 Windows Credential Manager；SSH 使用 Windows SSH Agent。应用不会自动上传诊断数据。
+
+## 许可
+
+本仓库当前未附开源许可证。除非版权所有者另行授权，公开可见不等于授予复制、修改或再分发权利。

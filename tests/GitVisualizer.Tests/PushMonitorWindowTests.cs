@@ -65,4 +65,66 @@ public sealed class PushMonitorWindowTests
 
         Assert.Null(failure);
     }
+
+    [Fact]
+    public void FailedNonFastForwardPush_ShowsChineseExplanationAndSafeSuggestion()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            PushMonitorWindow? window = null;
+            try
+            {
+                window = new PushMonitorWindow(
+                    "origin",
+                    "https://example.invalid/repository.git",
+                    "main");
+                window.Show();
+                window.Complete(GitOperationResult.Fail(
+                    "push",
+                    "git push origin",
+                    new InvalidOperationException(
+                        "cannot push non-fastforwardable reference")));
+
+                Assert.Contains(
+                    window.Entries,
+                    entry => entry.Message.StartsWith("中文解释：") &&
+                             entry.Message.Contains("远程分支包含本地尚未拥有的提交"));
+                Assert.Contains(
+                    window.Entries,
+                    entry => entry.Message.StartsWith("处理建议：") &&
+                             entry.Message.Contains("拉取合并或变基"));
+                Assert.DoesNotContain(
+                    window.Entries,
+                    entry => entry.Message.Contains("强制推送"));
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+            finally
+            {
+                window?.Close();
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        Assert.Null(failure);
+    }
+
+    [Fact]
+    public void UnknownPushFailure_StillShowsGenericChineseExplanation()
+    {
+        var result = GitOperationResult.Fail(
+            "push",
+            "git push origin",
+            new InvalidOperationException("unexpected vendor-specific failure"));
+
+        var explanation = PushFailureExplainer.Explain(result);
+
+        Assert.Contains("未能完成推送", explanation.Reason);
+        Assert.Contains("原始错误", explanation.Suggestion);
+    }
 }

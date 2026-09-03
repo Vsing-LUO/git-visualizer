@@ -1,0 +1,38 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Window x:Class="GitVisualizer.App.Dialogs.TagManagementWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="标签管理" Width="560" SizeToContent="Height" WindowStartupLocation="CenterOwner" ResizeMode="NoResize" ShowInTaskbar="False" xmlns:dialogs="clr-namespace:GitVisualizer.App.Dialogs;assembly=GitVisualizer">
+  <Grid Margin="22">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+    <StackPanel>
+      <TextBlock Text="标签管理" FontSize="20" FontWeight="SemiBold" />
+      <TextBlock Margin="0,5,0,0" Text="创建本地轻量标签，或删除已有标签。" Opacity="0.62" />
+    </StackPanel>
+    <GroupBox Grid.Row="1" Header="创建标签（目标：当前所选提交；未选择时为 HEAD）" Margin="0,16,0,10" Padding="12">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <TextBox Name="TagNameBox" MinWidth="320" ToolTip="例如 v1.1.0" />
+        <Button Grid.Column="1" Content="创建" Margin="10,0,0,0" Padding="18,5" Click="Create_OnClick" />
+      </Grid>
+    </GroupBox>
+    <GroupBox Grid.Row="2" Header="已有标签" Padding="12">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <ComboBox Name="ExistingTagsBox" MinWidth="320" DisplayMemberPath="Name" ItemsSource="{Binding}" />
+        <Button Grid.Column="1" Content="删除所选" Margin="10,0,0,0" Padding="18,5" Foreground="#FFE05D5D" Click="Delete_OnClick" />
+      </Grid>
+    </GroupBox>
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+      <Button Content="关闭" IsCancel="True" Padding="20,5" />
+    </StackPanel>
+  </Grid>
+</Window>

@@ -75,6 +75,69 @@ public sealed class GitRepositoryServiceTests
     }
 
     [Fact]
+    public async Task HistoricalBinaryFile_PreservesExactBytesForExternalViewing()
+    {
+        using var temporary = new TemporaryDirectory();
+        var service = CreateService();
+        await service.InitializeAsync(temporary.Path, Identity);
+        var expected = new byte[] { 0x50, 0x4B, 0x03, 0x04, 0x00, 0x7F, 0xFF };
+        const string documentName = "版本文档.docx";
+
+        await File.WriteAllBytesAsync(Path.Combine(temporary.Path, documentName), expected);
+        await service.StageFilesAsync(temporary.Path, [documentName]);
+        await service.CommitAsync(temporary.Path, "document version", Identity);
+        var commitId = (await service.GetSnapshotAsync(temporary.Path)).Head.CommitId;
+
+        var document = await service.OpenCommitFileAsync(
+            temporary.Path, commitId, documentName);
+
+        Assert.True(document.IsBinary);
+        Assert.True(document.IsReadOnly);
+        Assert.Equal(expected, document.ContentBytes);
+    }
+
+    [Fact]
+    public async Task OfficeLockFile_IsHiddenAndDoesNotBlockCheckout_ButDocumentChangesStillDo()
+    {
+        using var temporary = new TemporaryDirectory();
+        var service = CreateService();
+        await service.InitializeAsync(temporary.Path, Identity);
+        const string documentName = "报告.docx";
+        const string lockFileName = "~$报告.docx";
+        var documentPath = Path.Combine(temporary.Path, documentName);
+        var lockFilePath = Path.Combine(temporary.Path, lockFileName);
+
+        await File.WriteAllTextAsync(documentPath, "base");
+        await service.StageFilesAsync(temporary.Path, [documentName]);
+        await service.CommitAsync(temporary.Path, "base", Identity);
+        var baseId = (await service.GetSnapshotAsync(temporary.Path)).Head.CommitId;
+
+        await File.WriteAllTextAsync(documentPath, "second");
+        await service.StageFilesAsync(temporary.Path, [documentName]);
+        await service.CommitAsync(temporary.Path, "second", Identity);
+        var secondId = (await service.GetSnapshotAsync(temporary.Path)).Head.CommitId;
+        Assert.True((await service.CheckoutCommitAsync(temporary.Path, baseId)).Success);
+
+        await File.WriteAllTextAsync(lockFilePath, "Word owner file");
+
+        Assert.DoesNotContain(
+            (await service.GetSnapshotAsync(temporary.Path)).Changes,
+            change => change.Path == lockFileName);
+        var checkoutWithLockFile = await service.CheckoutCommitAsync(temporary.Path, secondId);
+        Assert.True(checkoutWithLockFile.Success, checkoutWithLockFile.ErrorMessage);
+        Assert.True(File.Exists(lockFilePath));
+
+        await File.WriteAllTextAsync(documentPath, "saved document changes");
+        var snapshot = await service.GetSnapshotAsync(temporary.Path);
+        Assert.Contains(snapshot.Changes, change => change.Path == documentName && !change.IsStaged);
+        Assert.DoesNotContain(snapshot.Changes, change => change.Path == lockFileName);
+
+        var blockedByDocumentChange = await service.CheckoutCommitAsync(temporary.Path, baseId);
+        Assert.False(blockedByDocumentChange.Success);
+        Assert.Contains("未提交修改", blockedByDocumentChange.ErrorMessage);
+    }
+
+    [Fact]
     public async Task BranchMergeAndRevert_AreAvailableWithoutGitCli()
     {
         using var temporary = new TemporaryDirectory();
@@ -454,6 +517,66 @@ public sealed class GitRepositoryServiceTests
         Assert.Equal("git@github.com:Vsing-LUO/1111.git", renamedRemote.PushUrl);
     }
 
+	[Fact]
+	public async Task Clone_RejectsEmbeddedHttpsCredentialsWithoutPersistingSecret()
+	{
+		using var destination = new TemporaryDirectory();
+		var service = CreateService();
+		const string address = "https://username:clone-secret@example.com/repository.git";
+
+		var result = await service.CloneAsync(address, destination.Path);
+
+		Assert.False(result.Success);
+		Assert.Contains("不得内嵌", result.ErrorMessage);
+		Assert.DoesNotContain("clone-secret", result.ErrorMessage);
+		Assert.Empty(Directory.EnumerateFileSystemEntries(destination.Path));
+	}
+
+	[Fact]
+	public async Task AddRemote_RejectsEmbeddedHttpsCredentials()
+	{
+		using var temporary = new TemporaryDirectory();
+		var service = CreateService();
+		Assert.True((await service.InitializeAsync(temporary.Path, Identity)).Success);
+
+		var result = await service.AddRemoteAsync(
+			temporary.Path,
+			"origin",
+			"https://username:add-secret@example.com/repository.git");
+
+		Assert.False(result.Success);
+		Assert.Contains("不得内嵌", result.ErrorMessage);
+		Assert.DoesNotContain("add-secret", result.ErrorMessage);
+		Assert.Empty((await service.GetSnapshotAsync(temporary.Path)).Remotes);
+	}
+
+	[Fact]
+	public async Task UpdateRemote_RejectsEmbeddedHttpsCredentialsAndPreservesConfiguration()
+	{
+		using var temporary = new TemporaryDirectory();
+		var service = CreateService();
+		Assert.True((await service.InitializeAsync(temporary.Path, Identity)).Success);
+		const string originalUrl = "https://example.com/repository.git";
+		Assert.True((await service.AddRemoteAsync(
+			temporary.Path,
+			"origin",
+			originalUrl)).Success);
+
+		var result = await service.UpdateRemoteAsync(
+			temporary.Path,
+			"origin",
+			"renamed",
+			"https://username:update-secret@example.com/repository.git");
+
+		Assert.False(result.Success);
+		Assert.Contains("不得内嵌", result.ErrorMessage);
+		Assert.DoesNotContain("update-secret", result.ErrorMessage);
+		var remote = Assert.Single((await service.GetSnapshotAsync(temporary.Path)).Remotes);
+		Assert.Equal("origin", remote.Name);
+		Assert.Equal(originalUrl, remote.FetchUrl);
+		Assert.Equal(originalUrl, remote.PushUrl);
+	}
+
     [Fact]
     public async Task CheckoutCommit_DetachesHeadAndRejectsDirtyWorkspace()
     {
@@ -535,6 +658,33 @@ public sealed class GitRepositoryServiceTests
     }
 
     [Fact]
+    public async Task Snapshot_AllowsBranchWhoseTrackedRemoteBranchIsGone()
+    {
+        using var temporary = new TemporaryDirectory();
+        var service = CreateService();
+        await service.InitializeAsync(temporary.Path, Identity);
+        await File.WriteAllTextAsync(Path.Combine(temporary.Path, "file.txt"), "base\n");
+        await service.StageFilesAsync(temporary.Path, ["file.txt"]);
+        await service.CommitAsync(temporary.Path, "base", Identity);
+
+        using (var repository = new Repository(temporary.Path))
+        {
+            repository.Network.Remotes.Add("origin", "https://example.invalid/repository.git");
+            repository.Refs.Add("refs/remotes/origin/main", repository.Head.Tip.Id);
+            repository.Config.Set("branch.main.remote", "origin", ConfigurationLevel.Local);
+            repository.Config.Set("branch.main.merge", "refs/heads/main", ConfigurationLevel.Local);
+            repository.Refs.Remove("refs/remotes/origin/main");
+        }
+
+        var snapshot = await service.GetSnapshotAsync(temporary.Path);
+
+        var main = Assert.Single(snapshot.Branches, branch => branch.FriendlyName == "main");
+        Assert.Equal("origin/main", main.TrackedBranch);
+        Assert.Equal(0, main.AheadBy);
+        Assert.Equal(0, main.BehindBy);
+    }
+
+    [Fact]
     public async Task RemovingRemote_DeletesOnlyTheLocalRemoteConfiguration()
     {
         using var temporary = new TemporaryDirectory();
@@ -565,6 +715,12 @@ public sealed class GitRepositoryServiceTests
         await service.StageFilesAsync(local.Path, ["readme.md"]);
         await service.CommitAsync(local.Path, "initial", Identity);
         await service.AddRemoteAsync(local.Path, "origin", remotePath);
+        Assert.True((await service.CreateTagAsync(local.Path, "local-lightweight")).Success);
+        Assert.True((await service.CreateTagAsync(
+            local.Path,
+            "release-annotated",
+            tagType: GitTagType.Annotated,
+            message: "Release annotation")).Success);
 
         var progressUpdates = new List<GitPushProgress>();
         var pushed = await service.PushAsync(
@@ -580,9 +736,14 @@ public sealed class GitRepositoryServiceTests
             progressUpdates,
             update => update.Stage == GitPushProgressStage.UpdatingTracking);
         var snapshot = await service.GetSnapshotAsync(local.Path);
-        Assert.Equal("origin/main", snapshot.Branches.Single(branch => branch.IsCurrent).TrackedBranch);
+        var currentBranch = snapshot.Branches.Single(branch => branch.IsCurrent);
+        Assert.Equal("origin/main", currentBranch.TrackedBranch);
+        Assert.Equal(0, currentBranch.AheadBy);
+        Assert.Equal(0, currentBranch.BehindBy);
         using var bare = new Repository(remotePath);
         Assert.NotNull(bare.Branches["main"]);
+        Assert.NotNull(bare.Tags["release-annotated"]);
+        Assert.Null(bare.Tags["local-lightweight"]);
 
         await File.AppendAllTextAsync(System.IO.Path.Combine(local.Path, "readme.md"), "lease update\n");
         await service.StageFilesAsync(local.Path, ["readme.md"]);
@@ -592,6 +753,35 @@ public sealed class GitRepositoryServiceTests
         using var localRepository = new Repository(local.Path);
         Assert.Contains(localRepository.Refs, reference =>
             reference.CanonicalName.StartsWith("refs/gitvisualizer/remote-recovery/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PushConfirmation_RejectsServerStatusError()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            LibGitRepositoryService.EnsurePushWasAccepted(
+                "refs/heads/main",
+                "1111111111111111111111111111111111111111",
+                "1111111111111111111111111111111111111111",
+                ["refs/heads/main：protected branch hook declined"]));
+
+        Assert.Contains("远程拒绝推送", exception.Message);
+        Assert.Contains("protected branch hook declined", exception.Message);
+    }
+
+    [Fact]
+    public void PushConfirmation_RejectsUnchangedRemoteTip()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            LibGitRepositoryService.EnsurePushWasAccepted(
+                "refs/heads/main",
+                "1111111111111111111111111111111111111111",
+                "2222222222222222222222222222222222222222",
+                []));
+
+        Assert.Contains("推送未生效", exception.Message);
+        Assert.Contains("2222222", exception.Message);
+        Assert.Contains("1111111", exception.Message);
     }
 
     [Fact]
@@ -775,6 +965,19 @@ public sealed class GitRepositoryServiceTests
         var created = await service.CreateTagAsync(temporary.Path, "v-test");
         Assert.True(created.Success, created.ErrorMessage);
         Assert.Contains((await service.GetSnapshotAsync(temporary.Path)).Tags, tag => tag.Name == "v-test");
+
+        var annotated = await service.CreateTagAsync(
+            temporary.Path,
+            "v-annotated",
+            tagType: GitTagType.Annotated,
+            message: "Formal release");
+        Assert.True(annotated.Success, annotated.ErrorMessage);
+        using (var repository = new Repository(temporary.Path))
+        {
+            Assert.NotNull(repository.Tags["v-annotated"]?.Annotation);
+            Assert.Contains("Formal release", repository.Tags["v-annotated"]!.Annotation!.Message);
+        }
+
         var deleted = await service.DeleteTagAsync(temporary.Path, "v-test");
         Assert.True(deleted.Success, deleted.ErrorMessage);
         Assert.DoesNotContain((await service.GetSnapshotAsync(temporary.Path)).Tags, tag => tag.Name == "v-test");

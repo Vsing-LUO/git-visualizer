@@ -32,6 +32,9 @@ public sealed class GitRemoteAddressTests
     [InlineData("github.com/Vsing-LUO/1111.git")]
     [InlineData("https:///1111.git")]
     [InlineData("javascript:alert(1)")]
+	[InlineData("https://username:token@example.com/repository.git")]
+	[InlineData("http://username:password@example.com/repository.git")]
+	[InlineData("//username:token@example.com/repository.git")]
     public void TryNormalize_RejectsMalformedOrUnsupportedAddresses(string value)
     {
         var valid = GitRemoteAddress.TryNormalize(value, out var normalized);

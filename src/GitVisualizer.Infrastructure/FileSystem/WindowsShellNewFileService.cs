@@ -31,6 +31,7 @@ public sealed class WindowsShellNewFileService : ISystemNewFileService
         }, cancellationToken);
 
     public async Task CreateAsync(
+        string repositoryRoot,
         string path,
         string typeId,
         CancellationToken cancellationToken = default)
@@ -55,7 +56,8 @@ public sealed class WindowsShellNewFileService : ISystemNewFileService
             throw new InvalidOperationException("该系统文件类型已不可用，请重新打开新建菜单。");
         }
 
-        var fullPath = Path.GetFullPath(path);
+        var fullPath = RepositoryPathGuard.EnsureSafe(
+            repositoryRoot, path, includeTargetReparsePoint: false);
         if (!Path.GetExtension(fullPath).Equals(
                 descriptor.Type.Extension,
                 StringComparison.OrdinalIgnoreCase))

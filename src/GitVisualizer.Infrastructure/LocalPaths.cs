@@ -7,12 +7,14 @@ public static class LocalPaths
     public static string SettingsFile => Path.Combine(Root, "settings.json");
     public static string DatabaseFile => Path.Combine(Root, "state.db");
     public static string RecoveryDirectory => Path.Combine(Root, "Recovery");
+    public static string DraftDirectory => Path.Combine(Root, "Drafts");
     public static string LogDirectory => Path.Combine(Root, "Logs");
 
     public static void EnsureCreated()
     {
         Directory.CreateDirectory(Root);
         Directory.CreateDirectory(RecoveryDirectory);
+        Directory.CreateDirectory(DraftDirectory);
         Directory.CreateDirectory(LogDirectory);
     }
 }

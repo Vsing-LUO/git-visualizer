@@ -51,6 +51,12 @@ public sealed class SafeWorkflowDialogTests
                 Assert.Equal(PullStrategy.Rebase, pull.SelectedStrategy);
                 Assert.Equal(firstCommit, comparison.OldCommit);
                 Assert.Equal(secondCommit, comparison.NewCommit);
+                Assert.Equal(
+                    "11111111  first",
+                    ((System.Windows.Controls.ComboBox)comparison.FindName("OldCommitBox")).Text);
+                Assert.Equal(
+                    "22222222  second",
+                    ((System.Windows.Controls.ComboBox)comparison.FindName("NewCommitBox")).Text);
             }
             catch (Exception exception)
             {

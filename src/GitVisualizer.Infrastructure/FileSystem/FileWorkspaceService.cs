@@ -52,25 +52,30 @@ public sealed class FileWorkspaceService : IFileWorkspaceService
     }
 
     public async Task SaveTextAsync(
+        string repositoryRoot,
         TextDocument original,
         string text,
         bool allowExternalOverwrite,
         CancellationToken cancellationToken = default)
     {
+        RepositoryPathGuard.EnsureSafe(repositoryRoot, original.Path, includeTargetReparsePoint: true);
         if (original.IsReadOnly)
         {
             throw new InvalidOperationException("此文件当前为只读。");
         }
 
         var info = new FileInfo(original.Path);
-        if (info.Exists && !allowExternalOverwrite &&
-            info.LastWriteTimeUtc != original.LastWriteTime.UtcDateTime)
+        if (!allowExternalOverwrite)
         {
+            if (!info.Exists)
+            {
+                throw new ExternalFileChangedException(original.Path);
+            }
             var current = await OpenTextAsync(original.Path, cancellationToken).ConfigureAwait(false);
             if (current.IsBinary ||
                 !string.Equals(current.Text, original.Text, StringComparison.Ordinal))
             {
-                throw new IOException("文件已被外部程序修改，请重新打开后再保存。");
+                throw new ExternalFileChangedException(original.Path);
             }
         }
 
@@ -95,9 +100,13 @@ public sealed class FileWorkspaceService : IFileWorkspaceService
         }
     }
 
-    public async Task CreateFileAsync(string path, CancellationToken cancellationToken = default)
+    public async Task CreateFileAsync(
+        string repositoryRoot,
+        string path,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        RepositoryPathGuard.EnsureSafe(repositoryRoot, path, includeTargetReparsePoint: false);
         if (File.Exists(path) || Directory.Exists(path))
         {
             throw new IOException("目标已经存在。");
@@ -116,9 +125,13 @@ public sealed class FileWorkspaceService : IFileWorkspaceService
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default)
+    public Task CreateDirectoryAsync(
+        string repositoryRoot,
+        string path,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        RepositoryPathGuard.EnsureSafe(repositoryRoot, path, includeTargetReparsePoint: false);
         if (File.Exists(path) || Directory.Exists(path))
         {
             throw new IOException("目标已经存在。");
@@ -128,9 +141,15 @@ public sealed class FileWorkspaceService : IFileWorkspaceService
         return Task.CompletedTask;
     }
 
-    public Task MoveAsync(string source, string destination, CancellationToken cancellationToken = default)
+    public Task MoveAsync(
+        string repositoryRoot,
+        string source,
+        string destination,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        RepositoryPathGuard.EnsureSafe(repositoryRoot, source, includeTargetReparsePoint: true);
+        RepositoryPathGuard.EnsureSafe(repositoryRoot, destination, includeTargetReparsePoint: false);
         if (File.Exists(destination) || Directory.Exists(destination))
         {
             throw new IOException("目标已经存在，未覆盖任何内容。");
@@ -152,9 +171,13 @@ public sealed class FileWorkspaceService : IFileWorkspaceService
         return Task.CompletedTask;
     }
 
-    public Task DeleteAsync(string path, CancellationToken cancellationToken = default)
+    public Task DeleteAsync(
+        string repositoryRoot,
+        string path,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        RepositoryPathGuard.EnsureSafe(repositoryRoot, path, includeTargetReparsePoint: true);
         if (File.Exists(path))
         {
             File.Delete(path);

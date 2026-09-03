@@ -3,16 +3,40 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>GitVisualizer</AssemblyName>
     <RootNamespace>GitVisualizer.App</RootNamespace>
-    <Version>1.2.0</Version>
+    <PlatformTarget>x64</PlatformTarget>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\GitVisualizer.ico</ApplicationIcon>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <NoWarn>$(NoWarn);CS0618;CS8600;CS8602;CS8603;CS8604;CS8619;CS8625;WFO0003</NoWarn>
   </PropertyGroup>
+
   <ItemGroup>
-    <ProjectReference Include="../GitVisualizer.Core/GitVisualizer.Core.csproj" />
-    <ProjectReference Include="../GitVisualizer.Infrastructure/GitVisualizer.Infrastructure.csproj" />
-    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <Using Remove="System.Drawing" />
+    <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ApplicationDefinition Include="GitVisualizer.App.App.xaml" />
+    <Page Remove="GitVisualizer.App.App.xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" IncludeAssets="compile;runtime" />
     <PackageReference Include="AvalonEdit" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
   </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../GitVisualizer.Core/GitVisualizer.Core.csproj" />
+    <ProjectReference Include="../GitVisualizer.Infrastructure/GitVisualizer.Infrastructure.csproj" />
+  </ItemGroup>
+
 </Project>

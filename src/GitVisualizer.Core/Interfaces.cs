@@ -6,11 +6,15 @@ public interface IGitRepositoryService
         string path, CancellationToken cancellationToken = default);
     Task<GitIdentity?> GetIdentityAsync(
         string repositoryPath, CancellationToken cancellationToken = default);
+    Task<GitIdentity?> GetDefaultIdentityAsync(
+        CancellationToken cancellationToken = default);
     Task<GitOperationResult> SetIdentityAsync(
         string repositoryPath, GitIdentity identity, bool global,
         CancellationToken cancellationToken = default);
+    Task<GitOperationResult> SetGlobalIdentityAsync(
+        GitIdentity identity, CancellationToken cancellationToken = default);
     Task<GitOperationResult> InitializeAsync(
-        string path, GitIdentity identity, CancellationToken cancellationToken = default);
+        string path, GitIdentity? identity = null, CancellationToken cancellationToken = default);
     Task<GitOperationResult> CloneAsync(
         string url, string path, RemoteCredential? credential = null,
         CancellationToken cancellationToken = default);
@@ -70,6 +74,7 @@ public interface IGitRepositoryService
         CancellationToken cancellationToken = default);
     Task<GitOperationResult> CreateTagAsync(
         string repositoryPath, string name, string? targetId = null,
+        GitTagType tagType = GitTagType.Lightweight, string? message = null,
         CancellationToken cancellationToken = default);
     Task<GitOperationResult> DeleteTagAsync(
         string repositoryPath, string name, CancellationToken cancellationToken = default);
@@ -168,6 +173,25 @@ public interface IRecoveryService
         RecoveryPoint point, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<RecoveryPoint>> ListAsync(
         string? repositoryPath = null, CancellationToken cancellationToken = default);
+    Task<GitOperationResult> DeleteAsync(
+        RecoveryPoint point, CancellationToken cancellationToken = default);
+    Task PruneRepositoryReferencesAsync(
+        string repositoryPath, CancellationToken cancellationToken = default);
+    Task PruneAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IEditorDraftStore
+{
+    Task<EditorDraft?> LoadAsync(
+        string repositoryPath, string documentPath,
+        CancellationToken cancellationToken = default);
+    Task SaveAsync(EditorDraft draft, CancellationToken cancellationToken = default);
+    Task DeleteAsync(
+        string repositoryPath, string documentPath,
+        CancellationToken cancellationToken = default);
+    Task MoveAsync(
+        string repositoryPath, string oldDocumentPath, string newDocumentPath,
+        CancellationToken cancellationToken = default);
     Task PruneAsync(CancellationToken cancellationToken = default);
 }
 
@@ -197,12 +221,17 @@ public interface IFileWorkspaceService
     Task<TextDocument> OpenTextAsync(string path, CancellationToken cancellationToken = default);
     Task OpenExternalAsync(string path, CancellationToken cancellationToken = default);
     Task SaveTextAsync(
-        TextDocument original, string text, bool allowExternalOverwrite,
+        string repositoryRoot, TextDocument original, string text, bool allowExternalOverwrite,
         CancellationToken cancellationToken = default);
-    Task CreateFileAsync(string path, CancellationToken cancellationToken = default);
-    Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default);
-    Task MoveAsync(string source, string destination, CancellationToken cancellationToken = default);
-    Task DeleteAsync(string path, CancellationToken cancellationToken = default);
+    Task CreateFileAsync(
+        string repositoryRoot, string path, CancellationToken cancellationToken = default);
+    Task CreateDirectoryAsync(
+        string repositoryRoot, string path, CancellationToken cancellationToken = default);
+    Task MoveAsync(
+        string repositoryRoot, string source, string destination,
+        CancellationToken cancellationToken = default);
+    Task DeleteAsync(
+        string repositoryRoot, string path, CancellationToken cancellationToken = default);
 }
 
 public interface ISystemNewFileService
@@ -210,6 +239,7 @@ public interface ISystemNewFileService
     Task<IReadOnlyList<SystemNewFileType>> GetAvailableTypesAsync(
         CancellationToken cancellationToken = default);
     Task CreateAsync(
+        string repositoryRoot,
         string path,
         string typeId,
         CancellationToken cancellationToken = default);

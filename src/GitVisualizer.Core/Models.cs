@@ -45,6 +45,12 @@ public enum GitResetMode
     Hard
 }
 
+public enum GitTagType
+{
+    Lightweight,
+    Annotated
+}
+
 public enum CredentialKind
 {
     None,
@@ -63,6 +69,13 @@ public enum ConflictSide
 }
 
 public sealed record GitIdentity(string Name, string Email);
+
+public sealed record EditorDraft(
+    string RepositoryPath,
+    string DocumentPath,
+    string Text,
+    DateTimeOffset BaseLastWriteTime,
+    DateTimeOffset UpdatedAt);
 
 public sealed record RemoteCredential(
     CredentialKind Kind,
@@ -417,7 +430,14 @@ public sealed record TextDocument(
     DateTimeOffset LastWriteTime,
     bool IsReadOnly,
     bool IsBinary,
-    long Size);
+    long Size,
+    byte[]? ContentBytes = null);
+
+public sealed class ExternalFileChangedException(string path)
+    : IOException("文件已被外部程序修改。")
+{
+    public string FilePath { get; } = System.IO.Path.GetFullPath(path);
+}
 
 public sealed record SystemNewFileType(
     string Id,

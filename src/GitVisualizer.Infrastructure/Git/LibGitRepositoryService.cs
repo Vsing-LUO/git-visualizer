@@ -45,12 +45,49 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 : new GitIdentity(name, email);
         }, cancellationToken);
 
+    public Task<GitIdentity?> GetDefaultIdentityAsync(CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var configuration = Configuration.BuildFrom(null!);
+            var name = configuration.Get<string>("user.name")?.Value;
+            var email = configuration.Get<string>("user.email")?.Value;
+            return string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(email)
+                ? null
+                : new GitIdentity(name, email);
+        }, cancellationToken);
+
+    public Task<GitOperationResult> SetGlobalIdentityAsync(
+        GitIdentity identity,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ValidateIdentity(identity);
+            try
+            {
+                using var configuration = Configuration.BuildFrom(null!);
+                configuration.Set("user.name", identity.Name.Trim(), ConfigurationLevel.Global);
+                configuration.Set("user.email", identity.Email.Trim(), ConfigurationLevel.Global);
+                return GitOperationResult.Ok(
+                    "identity-config", "已更新全局 Git 身份",
+                    "git config --global user.name <name>",
+                    [$"{identity.Name.Trim()} <{identity.Email.Trim()}>"]);
+            }
+            catch (Exception exception)
+            {
+                return GitOperationResult.Fail(
+                    "identity-config", "git config --global user.name <name>", exception);
+            }
+        }, cancellationToken);
+
     public Task<GitOperationResult> SetIdentityAsync(
         string repositoryPath,
         GitIdentity identity,
         bool global,
         CancellationToken cancellationToken = default)
     {
+        ValidateIdentity(identity);
         var level = global ? ConfigurationLevel.Global : ConfigurationLevel.Local;
         return ExecuteWriteAsync(
             repositoryPath,
@@ -61,8 +98,8 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             null,
             repository =>
             {
-                repository.Config.Set("user.name", identity.Name, level);
-                repository.Config.Set("user.email", identity.Email, level);
+                repository.Config.Set("user.name", identity.Name.Trim(), level);
+                repository.Config.Set("user.email", identity.Email.Trim(), level);
                 return GitOperationResult.Ok(
                     "identity-config",
                     global ? "默认 Git 身份已更新" : "仓库 Git 身份已更新",
@@ -73,11 +110,15 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
     }
 
     public Task<GitOperationResult> InitializeAsync(
-        string path, GitIdentity identity, CancellationToken cancellationToken = default) =>
+        string path, GitIdentity? identity = null, CancellationToken cancellationToken = default) =>
         ExecuteWriteAsync(path, "init", "git init", GitOperationRisk.Safe, false, null, repository =>
         {
-            repository.Config.Set("user.name", identity.Name, ConfigurationLevel.Local);
-            repository.Config.Set("user.email", identity.Email, ConfigurationLevel.Local);
+            if (identity is not null)
+            {
+                ValidateIdentity(identity);
+                repository.Config.Set("user.name", identity.Name.Trim(), ConfigurationLevel.Local);
+                repository.Config.Set("user.email", identity.Email.Trim(), ConfigurationLevel.Local);
+            }
             return GitOperationResult.Ok("init", "仓库初始化完成", "git init", [path]);
         }, initializeIfNeeded: true, cancellationToken);
 
@@ -91,13 +132,17 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var normalizedUrl = NormalizeRemoteAddress(url);
             if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             {
                 throw new IOException("克隆目标文件夹必须为空。");
             }
 
             await Task.Run(
-                () => Repository.Clone(url, path, GitServiceSupport.CloneOptions(credential)),
+                () => Repository.Clone(
+                    normalizedUrl,
+                    path,
+                    GitServiceSupport.CloneOptions(normalizedUrl, credential)),
                 cancellationToken).ConfigureAwait(false);
             var result = GitOperationResult.Ok("clone", "远程仓库克隆完成", command, [path]);
             await LogAsync(path, result, GitOperationRisk.Safe, cancellationToken).ConfigureAwait(false);
@@ -126,48 +171,53 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 DetectRenamesInIndex = true,
                 DetectRenamesInWorkDir = true
             });
-            var changes = status.SelectMany(entry =>
-            {
-                var fullPath = Path.Combine(repository.Info.WorkingDirectory, entry.FilePath);
-                var info = new FileInfo(fullPath);
-                var size = info.Exists ? info.Length : 0;
-                var isBinary = info.Exists && IsBinary(fullPath);
-                var entries = new List<FileChange>(2);
-                if (GitServiceSupport.HasStagedChanges(entry.State))
+            var changes = status
+                .Where(entry =>
+                    !GitServiceSupport.IsTransientOfficeLockFile(entry) &&
+                    !entry.State.HasFlag(FileStatus.Conflicted))
+                .SelectMany(entry =>
                 {
-                    entries.Add(new FileChange(
-                        entry.FilePath,
-                        null,
-                        GitServiceSupport.MapStatus(entry.State, staged: true),
-                        true,
-                        size,
-                        isBinary));
-                }
-                if (GitServiceSupport.HasUnstagedChanges(entry.State))
-                {
-                    entries.Add(new FileChange(
-                        entry.FilePath,
-                        null,
-                        GitServiceSupport.MapStatus(entry.State, staged: false),
-                        false,
-                        size,
-                        isBinary));
-                }
-                return entries;
-            }).ToArray();
+                    var fullPath = Path.Combine(repository.Info.WorkingDirectory, entry.FilePath);
+                    var info = new FileInfo(fullPath);
+                    var size = info.Exists ? info.Length : 0;
+                    var isBinary = info.Exists && IsBinary(fullPath);
+                    var entries = new List<FileChange>(2);
+                    if (GitServiceSupport.HasStagedChanges(entry.State))
+                    {
+                        entries.Add(new FileChange(
+                            entry.FilePath,
+                            null,
+                            GitServiceSupport.MapStatus(entry.State, staged: true),
+                            true,
+                            size,
+                            isBinary));
+                    }
+                    if (GitServiceSupport.HasUnstagedChanges(entry.State))
+                    {
+                        entries.Add(new FileChange(
+                            entry.FilePath,
+                            null,
+                            GitServiceSupport.MapStatus(entry.State, staged: false),
+                            false,
+                            size,
+                            isBinary));
+                    }
+                    return entries;
+                }).ToArray();
 
             var branches = repository.Branches.Select(branch =>
             {
-                var divergence = branch.TrackedBranch is null
+                var trackedBranch = branch.TrackedBranch;
+                var divergence = branch.Tip is null || trackedBranch?.Tip is null
                     ? null
-                    : repository.ObjectDatabase.CalculateHistoryDivergence(branch.Tip, branch.TrackedBranch.Tip);
+                    : repository.ObjectDatabase.CalculateHistoryDivergence(branch.Tip, trackedBranch.Tip);
                 return new BranchInfo(
                     branch.FriendlyName,
                     branch.CanonicalName,
                     branch.Tip?.Id.Sha ?? string.Empty,
                     branch.IsCurrentRepositoryHead,
                     branch.IsRemote,
-                    branch.TrackedBranch?.FriendlyName,
+                    trackedBranch?.FriendlyName,
                     divergence?.AheadBy ?? 0,
                     divergence?.BehindBy ?? 0);
             }).OrderByDescending(x => x.IsCurrent).ThenBy(x => x.IsRemote).ThenBy(x => x.FriendlyName).ToArray();
@@ -441,7 +491,8 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 commit.Author.When,
                 true,
                 isBinary,
-                bytes.LongLength);
+                bytes.LongLength,
+                bytes);
         }, cancellationToken);
 
     public Task<GitOperationResult> StageFilesAsync(
@@ -485,6 +536,22 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             if (normalizedPaths.Length == 0)
             {
                 throw new ArgumentException("请至少选择一个要丢弃修改的文件。", nameof(paths));
+            }
+
+            var conflictPaths = repository.Index.Conflicts
+                .Select(conflict => conflict.Ours?.Path ?? conflict.Theirs?.Path ?? conflict.Ancestor?.Path)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var requestedConflicts = normalizedPaths
+                .Select(item => item.RelativePath)
+                .Where(conflictPaths.Contains)
+                .ToArray();
+            if (requestedConflicts.Length > 0)
+            {
+                throw new InvalidOperationException(
+                    "冲突文件不能按普通未暂存修改丢弃：" +
+                    string.Join("、", requestedConflicts) +
+                    "。请在冲突解决器中采用当前/对方版本，或中止当前 Git 操作。");
             }
 
             foreach (var (relativePath, fullPath) in normalizedPaths)
@@ -721,9 +788,7 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                          ?? throw new ArgumentException("分支不存在。", nameof(name));
             var mainline = ResolveMainline(repository);
             var uncommittedChangeCount = repository.RetrieveStatus()
-                .Count(entry =>
-                    entry.State != FileStatus.Unaltered &&
-                    (entry.State & FileStatus.Ignored) == 0);
+                .Count(GitServiceSupport.IsMeaningfulChange);
 
             return new BranchDeletionCheck(
                 branch.FriendlyName,
@@ -870,9 +935,14 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
 
     public Task<GitOperationResult> CreateTagAsync(
         string repositoryPath, string name, string? targetId = null,
+        GitTagType tagType = GitTagType.Lightweight, string? message = null,
         CancellationToken cancellationToken = default)
     {
-        var command = $"git tag {GitServiceSupport.Quote(name)} {targetId ?? string.Empty}".TrimEnd();
+        var normalizedMessage = message?.Trim();
+        var command = tagType == GitTagType.Annotated
+            ? $"git tag -a {GitServiceSupport.Quote(name)} {targetId ?? string.Empty} -m {GitServiceSupport.Quote(normalizedMessage ?? string.Empty)}"
+            : $"git tag {GitServiceSupport.Quote(name)} {targetId ?? string.Empty}";
+        command = command.Trim();
         return ExecuteWriteAsync(repositoryPath, "tag-create", command, GitOperationRisk.Safe, false, null,
             repository =>
             {
@@ -881,8 +951,27 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 {
                     throw new ArgumentException("标签目标不存在。");
                 }
-                repository.ApplyTag(name, target.Sha);
-                return GitOperationResult.Ok("tag-create", $"已创建标签 {name}", command);
+
+                if (tagType == GitTagType.Annotated)
+                {
+                    if (string.IsNullOrWhiteSpace(normalizedMessage))
+                    {
+                        throw new ArgumentException("附注标签的说明不能为空。");
+                    }
+
+                    repository.Tags.Add(
+                        name,
+                        target,
+                        GitServiceSupport.ResolveSignature(repository, null),
+                        normalizedMessage);
+                }
+                else
+                {
+                    repository.Tags.Add(name, target);
+                }
+
+                var typeName = tagType == GitTagType.Annotated ? "附注标签" : "轻量标签";
+                return GitOperationResult.Ok("tag-create", $"已创建{typeName} {name}", command);
             }, cancellationToken: cancellationToken);
     }
 
@@ -972,7 +1061,7 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         return ExecuteWriteAsync(repositoryPath, "remote-add", command, GitOperationRisk.Safe, false, null,
             repository =>
             {
-                repository.Network.Remotes.Add(name, url);
+                repository.Network.Remotes.Add(name, NormalizeRemoteAddress(url));
                 return GitOperationResult.Ok("remote-add", $"已添加远程 {name}", command);
             }, cancellationToken: cancellationToken);
     }
@@ -998,6 +1087,7 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             null,
             repository =>
             {
+                var normalizedUrl = NormalizeRemoteAddress(url);
                 if (repository.Network.Remotes[currentName] is null)
                 {
                     throw new ArgumentException($"远程 {currentName} 不存在。");
@@ -1015,8 +1105,8 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 }
                 repository.Network.Remotes.Update(
                     effectiveName,
-                    updater => updater.Url = url,
-                    updater => updater.PushUrl = url);
+                    updater => updater.Url = normalizedUrl,
+                    updater => updater.PushUrl = normalizedUrl);
                 return GitOperationResult.Ok(
                     "remote-update",
                     $"已更新远程 {effectiveName}",
@@ -1051,7 +1141,7 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             {
                 var remote = repository.Network.Remotes[remoteName]
                              ?? throw new ArgumentException("远程不存在。");
-                var options = GitServiceSupport.FetchOptions(credential);
+                var options = GitServiceSupport.FetchOptions(remote.Url, credential);
                 options.Prune = true;
                 Commands.Fetch(repository, remote.Name,
                     remote.FetchRefSpecs.Select(x => x.Specification), options, "Git 可视化 fetch");
@@ -1089,7 +1179,7 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                     throw new ArgumentException("请选择远程分支。");
                 }
                 var signature = GitServiceSupport.ResolveSignature(repository, identity);
-                var fetchOptions = GitServiceSupport.FetchOptions(credential);
+                var fetchOptions = GitServiceSupport.FetchOptions(remote.Url, credential);
                 Commands.Fetch(repository, remote.Name,
                     remote.FetchRefSpecs.Select(x => x.Specification),
                     fetchOptions, "Git 可视化 pull");
@@ -1126,8 +1216,8 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         CancellationToken cancellationToken = default)
     {
         var command = forceWithLease
-            ? $"git push --force-with-lease {GitServiceSupport.Quote(remoteName)}"
-            : $"git push {GitServiceSupport.Quote(remoteName)}";
+            ? $"git push --force-with-lease --follow-tags {GitServiceSupport.Quote(remoteName)}"
+            : $"git push --follow-tags {GitServiceSupport.Quote(remoteName)}";
         return ExecuteWriteAsync(repositoryPath, "push", command,
             forceWithLease ? GitOperationRisk.Dangerous : GitOperationRisk.Safe,
             forceWithLease, null, repository =>
@@ -1142,8 +1232,35 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 progress?.Report(new GitPushProgress(
                     GitPushProgressStage.Connecting,
                     Message: $"正在连接 {remote.Name}"));
-                var options = GitServiceSupport.PushOptions(credential);
+                var pushUrl = string.IsNullOrWhiteSpace(remote.PushUrl) ? remote.Url : remote.PushUrl;
+                var options = GitServiceSupport.PushOptions(pushUrl, credential);
                 var destinationRef = $"refs/heads/{branch.FriendlyName}";
+                var localTipId = branch.Tip.Id.Sha;
+                var pushStatusErrors = new List<string>();
+                options.OnPushStatusError = error => pushStatusErrors.Add(
+                    string.IsNullOrWhiteSpace(error.Reference)
+                        ? error.Message
+                        : $"{error.Reference}：{error.Message}");
+                var reachableCommitIds = repository.Commits
+                    .QueryBy(new CommitFilter { IncludeReachableFrom = branch.Tip })
+                    .Select(commit => commit.Id)
+                    .ToHashSet();
+                var remoteReferenceNames = repository.Network
+                    .ListReferences(remote, options.CredentialsProvider)
+                    .Select(reference => reference.CanonicalName)
+                    .ToHashSet(StringComparer.Ordinal);
+                var annotatedTagsToPush = repository.Tags
+                    .Where(tag => tag.Annotation is not null)
+                    .Where(tag => tag.PeeledTarget is Commit commit && reachableCommitIds.Contains(commit.Id))
+                    .Where(tag => !remoteReferenceNames.Contains(tag.CanonicalName))
+                    .OrderBy(tag => tag.FriendlyName, StringComparer.Ordinal)
+                    .ToArray();
+                var pushRefSpecs = new List<string>
+                {
+                    $"{branch.CanonicalName}:{destinationRef}"
+                };
+                pushRefSpecs.AddRange(annotatedTagsToPush.Select(
+                    tag => $"{tag.CanonicalName}:{tag.CanonicalName}"));
                 ObjectId? expectedRemoteTip = null;
                 var leaseMismatch = false;
                 string? recoveryReference = null;
@@ -1210,11 +1327,12 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 };
                 if (forceWithLease)
                 {
+                    pushRefSpecs[0] = $"+{pushRefSpecs[0]}";
                     try
                     {
                         repository.Network.Push(
                             remote,
-                            $"+{branch.CanonicalName}:{destinationRef}",
+                            pushRefSpecs,
                             options);
                     }
                     catch when (leaseMismatch)
@@ -1232,9 +1350,21 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                 {
                     repository.Network.Push(
                         remote,
-                        $"{branch.CanonicalName}:{destinationRef}",
+                        pushRefSpecs,
                         options);
                 }
+                var confirmedRemoteTip = repository.Network
+                    .ListReferences(remote, options.CredentialsProvider)
+                    .FirstOrDefault(reference => string.Equals(
+                        reference.CanonicalName,
+                        destinationRef,
+                        StringComparison.Ordinal))
+                    ?.TargetIdentifier;
+                EnsurePushWasAccepted(
+                    destinationRef,
+                    localTipId,
+                    confirmedRemoteTip,
+                    pushStatusErrors);
                 progress?.Report(new GitPushProgress(
                     GitPushProgressStage.UpdatingTracking,
                     Message: "正在更新本地上游分支配置"));
@@ -1242,15 +1372,66 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                     branch,
                     updater => updater.Remote = remote.Name,
                     updater => updater.UpstreamBranch = $"refs/heads/{branch.FriendlyName}");
+                var updatedTrackingReferenceName = $"refs/remotes/{remote.Name}/{branch.FriendlyName}";
+                var updatedTrackingReference = repository.Refs[updatedTrackingReferenceName];
+                if (updatedTrackingReference is null)
+                {
+                    repository.Refs.Add(
+                        updatedTrackingReferenceName,
+                        branch.Tip.Id,
+                        "Git Visualizer push tracking update");
+                }
+                else
+                {
+                    repository.Refs.UpdateTarget(
+                        updatedTrackingReference,
+                        branch.Tip.Id,
+                        "Git Visualizer push tracking update");
+                }
                 return GitOperationResult.Ok(
                     "push",
-                    "推送完成",
+                    annotatedTagsToPush.Length == 0
+                        ? "推送完成"
+                        : $"推送完成，并上传 {annotatedTagsToPush.Length} 个附注标签",
                     command,
-                    recoveryReference is null
-                        ? []
-                        : [$"远程旧状态安全引用：{recoveryReference}"]);
+                    (recoveryReference is null
+                        ? Array.Empty<string>()
+                        : [$"远程旧状态安全引用：{recoveryReference}"])
+                    .Concat(annotatedTagsToPush.Length == 0
+                        ? Array.Empty<string>()
+                        : [$"已上传附注标签：{string.Join("、", annotatedTagsToPush.Select(tag => tag.FriendlyName))}"])
+                    .ToArray());
             }, cancellationToken: cancellationToken);
     }
+
+    internal static void EnsurePushWasAccepted(
+        string destinationRef,
+        string localTipId,
+        string? remoteTipId,
+        IReadOnlyList<string> pushStatusErrors)
+    {
+        if (pushStatusErrors.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"远程拒绝推送：{string.Join("；", pushStatusErrors)}");
+        }
+
+        if (string.IsNullOrWhiteSpace(remoteTipId))
+        {
+            throw new InvalidOperationException(
+                $"推送未生效：远程没有创建目标分支 {destinationRef}。请检查仓库写入权限或分支保护规则。");
+        }
+
+        if (!string.Equals(localTipId, remoteTipId, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"推送未生效：远程 {destinationRef} 仍停留在 {ShortObjectId(remoteTipId)}，" +
+                $"本地提交为 {ShortObjectId(localTipId)}。请检查仓库写入权限或分支保护规则。");
+        }
+    }
+
+    private static string ShortObjectId(string objectId) =>
+        objectId[..Math.Min(7, objectId.Length)];
 
     public Task<IReadOnlyList<ConflictFile>> GetConflictsAsync(
         string repositoryPath, CancellationToken cancellationToken = default) =>
@@ -1413,16 +1594,32 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             }, cancellationToken: cancellationToken);
     }
 
-    public Task<GitOperationResult> ContinueOperationAsync(
+    public async Task<GitOperationResult> ContinueOperationAsync(
         string repositoryPath, GitIdentity? identity = null,
         CancellationToken cancellationToken = default)
     {
-        return ExecuteWriteAsync(repositoryPath, "continue", "git <operation> --continue",
+        cancellationToken.ThrowIfCancellationRequested();
+        using (var repository = new Repository(repositoryPath))
+        {
+            if (repository.Info.CurrentOperation == CurrentOperation.Bisect)
+            {
+                return GitOperationResult.Fail(
+                    "continue", "git bisect good|bad|skip",
+                    new InvalidOperationException(
+                        "当前仓库正在执行 Git bisect；M0 不提供继续控制，请在终端使用 git bisect good、bad、skip 或 reset。"));
+            }
+        }
+        return await ExecuteWriteAsync(repositoryPath, "continue", "git <operation> --continue",
             GitOperationRisk.Caution, true, null, repository =>
             {
                 if (repository.Index.Conflicts.Any())
                 {
                     throw new InvalidOperationException("仍有未解决冲突。");
+                }
+                if (repository.Info.CurrentOperation == CurrentOperation.Bisect)
+                {
+                    throw new InvalidOperationException(
+                        "当前仓库正在执行 Git bisect；M0 不提供继续控制，请在终端使用 git bisect good、bad、skip 或 reset。");
                 }
                 var signature = GitServiceSupport.ResolveSignature(repository, identity);
                 return repository.Info.CurrentOperation switch
@@ -1433,17 +1630,31 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                     CurrentOperation.Revert => ContinueRevert(repository, signature),
                     _ => throw new InvalidOperationException("当前没有可继续的 Git 操作。")
                 };
-            }, cancellationToken: cancellationToken);
+            }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    public Task<GitOperationResult> AbortOperationAsync(
+    public async Task<GitOperationResult> AbortOperationAsync(
         string repositoryPath, CancellationToken cancellationToken = default)
     {
-        return ExecuteWriteAsync(repositoryPath, "abort", "git <operation> --abort",
+        cancellationToken.ThrowIfCancellationRequested();
+        using (var repository = new Repository(repositoryPath))
+        {
+            if (repository.Info.CurrentOperation == CurrentOperation.Bisect)
+            {
+                return GitOperationResult.Fail(
+                    "abort", "git bisect reset",
+                    new InvalidOperationException(
+                        "当前仓库正在执行 Git bisect；M0 不提供中止控制，请在终端运行 git bisect reset。"));
+            }
+        }
+        return await ExecuteWriteAsync(repositoryPath, "abort", "git <operation> --abort",
             GitOperationRisk.Caution, true, null, repository =>
             {
                 switch (repository.Info.CurrentOperation)
                 {
+                    case CurrentOperation.Bisect:
+                        throw new InvalidOperationException(
+                            "当前仓库正在执行 Git bisect；M0 不提供中止控制，请在终端运行 git bisect reset。");
                     case CurrentOperation.Rebase:
                         repository.Rebase.Abort();
                         break;
@@ -1462,7 +1673,7 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
                         throw new InvalidOperationException("当前没有可中止的 Git 操作。");
                 }
                 return GitOperationResult.Ok("abort", "操作已中止，工作区已恢复", "git <operation> --abort");
-            }, cancellationToken: cancellationToken);
+            }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     public GitOperationPreview Preview(string operation, params string[] affectedItems)
@@ -1566,7 +1777,7 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
 
     private static void EnsureClean(Repository repository)
     {
-        if (repository.RetrieveStatus().IsDirty)
+        if (repository.RetrieveStatus().Any(GitServiceSupport.IsMeaningfulChange))
         {
             throw new InvalidOperationException(
                 "工作区存在已暂存或未暂存的未提交修改，请先提交或处理这些修改。");
@@ -1634,6 +1845,18 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
             "Git Visualizer stash safety backup");
     }
 
+    private static string NormalizeRemoteAddress(string url)
+    {
+        if (!GitRemoteAddress.TryNormalize(url, out var normalized))
+        {
+            throw new ArgumentException(
+                "远程仓库地址无效；HTTP/HTTPS 地址不得内嵌用户名、密码或访问令牌。",
+                nameof(url));
+        }
+
+        return normalized;
+    }
+
     private static string NormalizeStashMessage(string message)
     {
         var normalized = message.Trim();
@@ -1652,7 +1875,32 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         var referenceName =
             $"refs/gitvisualizer/{category}/{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}";
         repository.Refs.Add(referenceName, target, logMessage);
+        PruneSafetyReferences(repository, category);
         return referenceName;
+    }
+
+    private static void PruneSafetyReferences(Repository repository, string category)
+    {
+        const int maxReferences = 50;
+        var maxAge = TimeSpan.FromDays(30);
+        var prefix = $"refs/gitvisualizer/{category}/";
+        var references = repository.Refs
+            .Where(reference => reference.CanonicalName.StartsWith(prefix, StringComparison.Ordinal))
+            .OrderByDescending(reference => reference.CanonicalName, StringComparer.Ordinal)
+            .ToArray();
+        for (var index = 0; index < references.Length; index++)
+        {
+            var name = references[index].CanonicalName;
+            var timestamp = name[prefix.Length..].Split('-', 2)[0];
+            var expired = DateTimeOffset.TryParseExact(
+                timestamp, "yyyyMMddHHmmssfff", null,
+                System.Globalization.DateTimeStyles.AssumeUniversal, out var createdAt) &&
+                DateTimeOffset.UtcNow - createdAt > maxAge;
+            if (index >= maxReferences || expired)
+            {
+                repository.Refs.Remove(name);
+            }
+        }
     }
 
     private static Branch ResolveMainline(Repository repository) =>
@@ -2031,6 +2279,17 @@ public sealed class LibGitRepositoryService : IGitRepositoryService
         Span<byte> bytes = stackalloc byte[8192];
         var count = stream.Read(bytes);
         return IsBinary(bytes[..count]);
+    }
+
+    private static void ValidateIdentity(GitIdentity identity)
+    {
+        if (string.IsNullOrWhiteSpace(identity.Name) ||
+            string.IsNullOrWhiteSpace(identity.Email) ||
+            identity.Name.IndexOfAny(['\r', '\n']) >= 0 ||
+            identity.Email.IndexOfAny(['\r', '\n']) >= 0)
+        {
+            throw new ArgumentException("Git 用户名和邮箱不能为空或包含换行符。");
+        }
     }
 
     private static bool IsBinary(ReadOnlySpan<byte> bytes) =>

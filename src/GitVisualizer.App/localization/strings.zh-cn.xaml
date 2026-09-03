@@ -1,0 +1,30 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:system="clr-namespace:System;assembly=System.Runtime">
+  <system1:String x:Key="App.Title" xmlns:system1="clr-namespace:System;assembly=System.Private.CoreLib">Git 可视化</system1:String>
+  <String x:Key="Action.Open" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">打开仓库</String>
+  <String x:Key="Action.Init" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">初始化</String>
+  <String x:Key="Action.Clone" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">克隆</String>
+  <String x:Key="Action.Refresh" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">刷新</String>
+  <String x:Key="Action.Fetch" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">获取</String>
+  <String x:Key="Action.Pull" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">拉取</String>
+  <String x:Key="Action.Push" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">推送</String>
+  <String x:Key="Action.Save" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">保存</String>
+  <String x:Key="Action.Stage" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">暂存</String>
+  <String x:Key="Action.Unstage" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">取消暂存</String>
+  <String x:Key="Action.Commit" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">创建提交</String>
+  <String x:Key="Action.LoadMore" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">加载更多提交</String>
+  <String x:Key="Status.HistoryComplete" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">已加载完所有提交</String>
+  <String x:Key="Section.Repositories" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">仓库</String>
+  <String x:Key="Section.Branches" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">分支</String>
+  <String x:Key="Section.Files" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">文件</String>
+  <String x:Key="Section.History" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">提交关系图</String>
+  <String x:Key="Section.Unstaged" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">未暂存</String>
+  <String x:Key="Section.Staged" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">已暂存</String>
+  <String x:Key="Tab.Diff" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">差异</String>
+  <String x:Key="Tab.Editor" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">编辑器</String>
+  <String x:Key="Tab.Details" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">详情</String>
+  <String x:Key="Tab.Log" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">操作日志</String>
+  <String x:Key="Hint.NoRepository" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">拖入文件夹，或点击“打开仓库”开始</String>
+  <String x:Key="Hint.CommitMessage" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">说明这次修改解决了什么……</String>
+  <String x:Key="Hint.EquivalentCommand" xmlns="clr-namespace:System;assembly=System.Private.CoreLib">等价 Git 命令（未实际执行）</String>
+</ResourceDictionary>

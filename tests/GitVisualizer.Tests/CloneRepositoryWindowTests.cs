@@ -7,6 +7,25 @@ namespace GitVisualizer.Tests;
 
 public sealed class CloneRepositoryWindowTests
 {
+	[Theory]
+	[InlineData("https://username:token@example.com/repository.git", false)]
+	[InlineData("https://username:token@example.com/repository.git", true)]
+	public void EmbeddedHttpCredentialsAreRejectedBeforeClone(
+		string address,
+		bool usesTokenLogin)
+	{
+		var valid = CloneRepositoryWindow.TryValidateRepositoryUrl(
+			address,
+			usesTokenLogin,
+			out var normalized,
+			out var error);
+
+		Assert.False(valid);
+		Assert.Empty(normalized);
+		Assert.Contains("不得内嵌", error);
+		Assert.DoesNotContain("token", error, StringComparison.OrdinalIgnoreCase);
+	}
+
     [Fact]
     public void PublicAndTokenOptions_CreateExpectedCredentials()
     {

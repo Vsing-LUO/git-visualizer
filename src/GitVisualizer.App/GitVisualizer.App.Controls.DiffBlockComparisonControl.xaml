@@ -1,0 +1,119 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<UserControl x:Class="GitVisualizer.App.Controls.DiffBlockComparisonControl" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:controls="clr-namespace:GitVisualizer.App.Controls" MinWidth="540">
+  <Border Margin="0,0,0,7" Padding="8" Background="{DynamicResource PanelBrush}" CornerRadius="5">
+    <StackPanel>
+      <TextBlock FontWeight="SemiBold" Text="{Binding Block.Title, RelativeSource={RelativeSource AncestorType=controls:DiffBlockComparisonControl}}" />
+      <TextBlock Margin="0,2,0,6" FontSize="10.5" Opacity="0.62" TextWrapping="Wrap" Text="{Binding Block.Description, RelativeSource={RelativeSource AncestorType=controls:DiffBlockComparisonControl}}" />
+      <Grid Name="ComparisonHeader" Margin="0,0,0,3">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="8" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <TextBlock FontSize="10.5" FontWeight="SemiBold" Text="{Binding OldLabel, RelativeSource={RelativeSource AncestorType=controls:DiffBlockComparisonControl}}" />
+        <TextBlock Grid.Column="2" FontSize="10.5" FontWeight="SemiBold" Text="{Binding NewLabel, RelativeSource={RelativeSource AncestorType=controls:DiffBlockComparisonControl}}" />
+      </Grid>
+      <ItemsControl ItemsSource="{Binding Block.Rows, RelativeSource={RelativeSource AncestorType=controls:DiffBlockComparisonControl}}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Grid Margin="0,1">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="8" />
+                <ColumnDefinition Width="*" />
+              </Grid.ColumnDefinitions>
+              <Border Padding="6,4" CornerRadius="3">
+                <FrameworkElement.Style>
+                  <Style TargetType="{x:Type Border}">
+                    <Setter Property="Background" Value="#35EF4444" />
+                    <Setter Property="BorderBrush" Value="#8AEF4444" />
+                    <Setter Property="BorderThickness" Value="2,0,0,0" />
+                    <Style.Triggers>
+                      <DataTrigger Value="True" Binding="{Binding IsContext}">
+                        <Setter Property="Background" Value="#151E293B" />
+                        <Setter Property="BorderBrush" Value="#00FFFFFF" />
+                      </DataTrigger>
+                      <DataTrigger Value="False" Binding="{Binding HasOldLine}">
+                        <Setter Property="Background" Value="#0F1E293B" />
+                        <Setter Property="BorderBrush" Value="#00FFFFFF" />
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </FrameworkElement.Style>
+                <StackPanel>
+                  <TextBlock FontSize="9.5" Opacity="0.55" Text="{Binding OldLineLabel}">
+                    <FrameworkElement.Style>
+                      <Style TargetType="{x:Type TextBlock}">
+                        <Style.Triggers>
+                          <DataTrigger Value="" Binding="{Binding OldLineLabel}">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </FrameworkElement.Style>
+                  </TextBlock>
+                  <TextBlock MinHeight="16" FontFamily="Cascadia Mono,Consolas" FontSize="11" TextWrapping="Wrap" Text="{Binding OldDisplayText}" />
+                  <TextBlock FontSize="9.5" Foreground="#FFC47A00" Text="{Binding OldAnnotation}">
+                    <FrameworkElement.Style>
+                      <Style TargetType="{x:Type TextBlock}">
+                        <Style.Triggers>
+                          <DataTrigger Value="" Binding="{Binding OldAnnotation}">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </FrameworkElement.Style>
+                  </TextBlock>
+                </StackPanel>
+              </Border>
+              <Border Grid.Column="2" Padding="6,4" CornerRadius="3">
+                <FrameworkElement.Style>
+                  <Style TargetType="{x:Type Border}">
+                    <Setter Property="Background" Value="#3222C55E" />
+                    <Setter Property="BorderBrush" Value="#8522C55E" />
+                    <Setter Property="BorderThickness" Value="2,0,0,0" />
+                    <Style.Triggers>
+                      <DataTrigger Value="True" Binding="{Binding IsContext}">
+                        <Setter Property="Background" Value="#151E293B" />
+                        <Setter Property="BorderBrush" Value="#00FFFFFF" />
+                      </DataTrigger>
+                      <DataTrigger Value="False" Binding="{Binding HasNewLine}">
+                        <Setter Property="Background" Value="#0F1E293B" />
+                        <Setter Property="BorderBrush" Value="#00FFFFFF" />
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </FrameworkElement.Style>
+                <StackPanel>
+                  <TextBlock FontSize="9.5" Opacity="0.55" Text="{Binding NewLineLabel}">
+                    <FrameworkElement.Style>
+                      <Style TargetType="{x:Type TextBlock}">
+                        <Style.Triggers>
+                          <DataTrigger Value="" Binding="{Binding NewLineLabel}">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </FrameworkElement.Style>
+                  </TextBlock>
+                  <TextBlock MinHeight="16" FontFamily="Cascadia Mono,Consolas" FontSize="11" TextWrapping="Wrap" Text="{Binding NewDisplayText}" />
+                  <TextBlock FontSize="9.5" Foreground="#FFC47A00" Text="{Binding NewAnnotation}">
+                    <FrameworkElement.Style>
+                      <Style TargetType="{x:Type TextBlock}">
+                        <Style.Triggers>
+                          <DataTrigger Value="" Binding="{Binding NewAnnotation}">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </FrameworkElement.Style>
+                  </TextBlock>
+                </StackPanel>
+              </Border>
+            </Grid>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </StackPanel>
+  </Border>
+</UserControl>

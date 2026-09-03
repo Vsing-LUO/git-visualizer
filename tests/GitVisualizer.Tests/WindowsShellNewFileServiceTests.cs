@@ -46,7 +46,7 @@ public sealed class WindowsShellNewFileServiceTests
 
         using var temporary = new TemporaryDirectory();
         var path = Path.Combine(temporary.Path, "系统模板" + selected.Extension);
-        await service.CreateAsync(path, selected.Id);
+        await service.CreateAsync(temporary.Path, path, selected.Id);
 
         Assert.True(File.Exists(path));
     }

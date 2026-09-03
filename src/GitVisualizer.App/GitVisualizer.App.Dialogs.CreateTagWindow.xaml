@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window x:Class="GitVisualizer.App.Dialogs.CreateTagWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="创建 Tag"
+        Width="620"
+        SizeToContent="Height"
+        MaxHeight="780"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False">
+  <Grid Margin="24">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <StackPanel>
+      <TextBlock Text="创建 Tag" FontSize="20" FontWeight="SemiBold" />
+      <TextBlock Margin="0,6,0,0"
+                 Text="为选中的提交创建 Tag；创建后会立即显示在提交关系图中。"
+                 FontSize="12" Opacity="0.64" />
+      <Border Margin="0,12,0,0" Padding="12,9" Background="#182D8CFF"
+              BorderBrush="#443B82F6" BorderThickness="1" CornerRadius="6">
+        <TextBlock Text="推送规则：轻量 Tag 只保存在本地；附注 Tag 会在推送对应分支时自动上传。"
+                   TextWrapping="Wrap" FontSize="12" Foreground="{StaticResource AccentBrightBrush}" />
+      </Border>
+    </StackPanel>
+
+    <Border Grid.Row="1" Margin="0,18,0,0" Padding="18,16"
+            Background="#9A111D2C" BorderBrush="{StaticResource SubtleBorderBrush}"
+            BorderThickness="1" CornerRadius="8">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel>
+          <TextBlock Text="Tag 类型" FontWeight="SemiBold" Margin="0,0,0,10" />
+          <StackPanel Orientation="Horizontal">
+            <RadioButton Name="LightweightOption" GroupName="TagType" Content="轻量 Tag"
+                         IsChecked="True" Checked="TagType_OnChanged" />
+            <RadioButton Name="AnnotatedOption" GroupName="TagType" Content="附注 Tag"
+                         Margin="26,0,0,0" Checked="TagType_OnChanged" />
+          </StackPanel>
+          <TextBlock Name="TagTypeHint" Margin="0,9,0,0" FontSize="11.5" Opacity="0.58"
+                     Text="轻量 Tag 只保存在本地，普通推送不会上传。" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" Margin="0,18,0,0">
+          <TextBlock Text="Tag 名称" FontWeight="SemiBold" Margin="0,0,0,7" />
+          <TextBox Name="TagNameBox" MinHeight="36" Padding="10,7"
+                   ToolTip="例如 v1.0.0" TextChanged="Input_OnChanged" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" Margin="0,16,0,0">
+          <TextBlock Text="目标提交" FontWeight="SemiBold" Margin="0,0,0,7" />
+          <ComboBox Name="TargetCommitBox" MinHeight="38" MaxDropDownHeight="270"
+                    TextSearch.TextPath="DisplayText"
+                    SelectionChanged="Input_OnChanged">
+            <ComboBox.ItemTemplate>
+              <DataTemplate>
+                <Grid MinWidth="460">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Text="{Binding ShortId}" FontFamily="Consolas" FontWeight="SemiBold"
+                             Foreground="{StaticResource AccentBrightBrush}" />
+                  <TextBlock Grid.Column="1" Margin="8,0,0,0" Text="{Binding Message, StringFormat=- {0}}"
+                             TextTrimming="CharacterEllipsis" />
+                </Grid>
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <TextBlock Margin="0,7,0,0" Text="默认使用右键选中的提交。" FontSize="11.5" Opacity="0.55" />
+        </StackPanel>
+
+        <StackPanel Name="AnnotationPanel" Grid.Row="3" Margin="0,16,0,0" Visibility="Collapsed">
+          <TextBlock Text="Tag 说明" FontWeight="SemiBold" Margin="0,0,0,7" />
+          <TextBox Name="TagMessageBox" MinHeight="96" Padding="10,8"
+                   AcceptsReturn="True" TextWrapping="Wrap"
+                   VerticalScrollBarVisibility="Auto" TextChanged="Input_OnChanged" />
+          <TextBlock Margin="0,7,0,0" Text="附注 Tag 会保存说明、创建者及创建时间，并在推送时自动上传。" FontSize="11.5" Opacity="0.55" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Border Grid.Row="2" Margin="0,12,0,0" Padding="11,8" Background="#18E05D5D"
+            BorderBrush="#55E05D5D" BorderThickness="1" CornerRadius="6">
+      <Border.Style>
+        <Style TargetType="{x:Type Border}">
+          <Setter Property="Visibility" Value="Visible" />
+          <Style.Triggers>
+            <DataTrigger Binding="{Binding Text, ElementName=ValidationText}" Value="">
+              <Setter Property="Visibility" Value="Collapsed" />
+            </DataTrigger>
+          </Style.Triggers>
+        </Style>
+      </Border.Style>
+      <TextBlock Name="ValidationText" Foreground="#FFE05D5D" TextWrapping="Wrap" />
+    </Border>
+
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+      <Button Content="取消" IsCancel="True" MinWidth="88" />
+      <Button Name="CreateButton" Content="创建" IsDefault="True" MinWidth="96"
+              Background="{StaticResource AccentBrush}" Foreground="#FFFFFFFF"
+              Click="Create_OnClick" />
+    </StackPanel>
+  </Grid>
+</Window>

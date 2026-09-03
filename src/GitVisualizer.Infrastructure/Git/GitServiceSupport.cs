@@ -9,6 +9,15 @@ internal static class GitServiceSupport
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> RepositoryLocks =
         new(StringComparer.OrdinalIgnoreCase);
 
+    private static readonly HashSet<string> OfficeDocumentExtensions =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".doc", ".docx", ".docm", ".dot", ".dotx", ".dotm",
+            ".xls", ".xlsx", ".xlsm", ".xlsb", ".xlt", ".xltx", ".xltm",
+            ".ppt", ".pptx", ".pptm", ".pot", ".potx", ".potm",
+            ".pps", ".ppsx", ".ppsm"
+        };
+
     public static SemaphoreSlim LockFor(string repositoryPath) =>
         RepositoryLocks.GetOrAdd(Path.GetFullPath(repositoryPath), _ => new SemaphoreSlim(1, 1));
 
@@ -31,11 +40,21 @@ internal static class GitServiceSupport
         return new Signature(name, email, DateTimeOffset.Now);
     }
 
-    public static Credentials? CreateCredentials(RemoteCredential? credential)
+    public static Credentials? CreateCredentials(
+        string configuredRemoteUrl,
+        string requestedUrl,
+        RemoteCredential? credential)
     {
         if (credential is null || credential.Kind == CredentialKind.None)
         {
             return null;
+        }
+
+        if (credential.Kind == CredentialKind.HttpsToken &&
+            !IsSameHttpsOrigin(configuredRemoteUrl, requestedUrl))
+        {
+            throw new InvalidOperationException(
+                "为保护访问令牌，认证仅允许发送到原始 HTTPS 远程仓库的同源地址。");
         }
 
         return credential.Kind switch
@@ -52,25 +71,61 @@ internal static class GitServiceSupport
         };
     }
 
-    public static FetchOptions FetchOptions(RemoteCredential? credential)
+    public static FetchOptions FetchOptions(string remoteUrl, RemoteCredential? credential)
     {
+        EnsureTokenRemoteIsHttps(remoteUrl, credential);
         return new FetchOptions
         {
-            CredentialsProvider = (_, _, _) => CreateCredentials(credential)
+            CredentialsProvider = (requestedUrl, _, _) =>
+                CreateCredentials(remoteUrl, requestedUrl, credential)
         };
     }
 
-    public static PushOptions PushOptions(RemoteCredential? credential)
+    public static PushOptions PushOptions(string remoteUrl, RemoteCredential? credential)
     {
+        EnsureTokenRemoteIsHttps(remoteUrl, credential);
         return new PushOptions
         {
-            CredentialsProvider = (_, _, _) => CreateCredentials(credential)
+            CredentialsProvider = (requestedUrl, _, _) =>
+                CreateCredentials(remoteUrl, requestedUrl, credential)
         };
     }
 
-    public static CloneOptions CloneOptions(RemoteCredential? credential)
+    public static CloneOptions CloneOptions(string remoteUrl, RemoteCredential? credential)
     {
-        return new CloneOptions(FetchOptions(credential));
+        return new CloneOptions(FetchOptions(remoteUrl, credential));
+    }
+
+    internal static bool IsSameHttpsOrigin(string configuredRemoteUrl, string requestedUrl)
+    {
+        if (!Uri.TryCreate(configuredRemoteUrl, UriKind.Absolute, out var configured) ||
+            !Uri.TryCreate(requestedUrl, UriKind.Absolute, out var requested) ||
+            !configured.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !requested.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !string.IsNullOrEmpty(configured.UserInfo) ||
+            !string.IsNullOrEmpty(requested.UserInfo))
+        {
+            return false;
+        }
+
+        return configured.IdnHost.Equals(requested.IdnHost, StringComparison.OrdinalIgnoreCase) &&
+               EffectivePort(configured) == EffectivePort(requested);
+    }
+
+    private static int EffectivePort(Uri uri) => uri.IsDefaultPort ? 443 : uri.Port;
+
+    internal static void EnsureTokenRemoteIsHttps(
+        string remoteUrl, RemoteCredential? credential)
+    {
+        if (credential?.Kind == CredentialKind.HttpsToken &&
+            (!Uri.TryCreate(remoteUrl, UriKind.Absolute, out var uri) ||
+             !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+             string.IsNullOrWhiteSpace(uri.Host) ||
+             !string.IsNullOrEmpty(uri.UserInfo)))
+        {
+            throw new InvalidOperationException(
+                "个人访问令牌只能用于绝对 HTTPS 远程仓库地址。");
+        }
     }
 
     public static GitChangeState MapStatus(FileStatus status) =>
@@ -134,6 +189,23 @@ internal static class GitServiceSupport
         status.HasFlag(FileStatus.TypeChangeInWorkdir) ||
         status.HasFlag(FileStatus.Conflicted) ||
         status.HasFlag(FileStatus.Ignored);
+
+    public static bool IsTransientOfficeLockFile(StatusEntry entry)
+    {
+        if (!entry.State.HasFlag(FileStatus.NewInWorkdir) || HasStagedChanges(entry.State))
+        {
+            return false;
+        }
+
+        var fileName = Path.GetFileName(entry.FilePath);
+        return fileName.StartsWith("~$", StringComparison.Ordinal) &&
+               OfficeDocumentExtensions.Contains(Path.GetExtension(fileName));
+    }
+
+    public static bool IsMeaningfulChange(StatusEntry entry) =>
+        entry.State != FileStatus.Unaltered &&
+        !entry.State.HasFlag(FileStatus.Ignored) &&
+        !IsTransientOfficeLockFile(entry);
 
     public static string Quote(string value) =>
         value.Contains(' ', StringComparison.Ordinal) ? $"\"{value.Replace("\"", "\\\"", StringComparison.Ordinal)}\"" : value;

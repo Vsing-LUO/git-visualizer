@@ -7,7 +7,16 @@ TestResults/
 *.suo
 *.nupkg
 artifacts/
+build-output/
+installer/output/
+installer/GitVisualizer.ico
+installer/uninstall.exe
 *.db
 *.db-shm
 *.db-wal
 *.log
+*.exe
+*.dll
+*.pdb
+*.bundle
+*.lnk
