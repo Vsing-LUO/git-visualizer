@@ -21,6 +21,7 @@ using GitVisualizer.App.Controls;
 using GitVisualizer.App.Dialogs;
 using GitVisualizer.App.ViewModels;
 using GitVisualizer.Core;
+using GitVisualizer.Infrastructure;
 using Microsoft.Win32;
 
 namespace GitVisualizer.App;
@@ -149,6 +150,16 @@ public partial class MainWindow : Window, IComponentConnector
 	public MainWindow(MainWindowViewModel viewModel)
 	{
 		InitializeComponent();
+        Activated += async (_, _) => await viewModel.RevalidateOnFocusAsync();
+		GitVisualizer.App.Controls.DirectoryExpansionMeasurement.Attach(FileTreeView);
+        FileTreeView.AddHandler(TreeViewItem.ExpandedEvent, new RoutedEventHandler(async (_, args) =>
+        {
+            if (args.OriginalSource is TreeViewItem { DataContext: FileTreeItem item })
+            {
+                try { await item.LoadChildrenAsync(); }
+                catch (OperationCanceledException) { }
+            }
+        }));
 		this.viewModel = viewModel;
 		featureZoomScopes = [DiffZoomScope, EditorZoomScope, DetailsZoomScope, ConflictZoomScope, LogZoomScope];
 		foreach (FrameworkElement scope in featureZoomScopes)
@@ -734,7 +745,7 @@ public partial class MainWindow : Window, IComponentConnector
 			GitIdentity? localIdentity = null;
 			if (inheritedIdentity == null)
 			{
-				string? name = Prompt("Git 身份", "尚未配置 Git 身份，请输入用户名：", string.Empty);
+				string? name = Prompt("Git 身份", LocalPaths.Default.IsIsolated ? "隔离模式：身份仅保存到当前新仓库。\n请输入用户名：" : "尚未配置 Git 身份，请输入用户名：", string.Empty);
 				if (name == null)
 				{
 					return false;
@@ -745,7 +756,7 @@ public partial class MainWindow : Window, IComponentConnector
 					return false;
 				}
 				GitIdentity enteredIdentity = new GitIdentity(name, email);
-				MessageBoxResult scope = MessageBox.Show(this,
+				MessageBoxResult scope = LocalPaths.Default.IsIsolated ? MessageBoxResult.No : MessageBox.Show(this,
 					"选择“是”保存为全局默认身份；选择“否”只保存到当前新仓库。",
 					"Git 身份保存范围", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
 				if (scope == MessageBoxResult.Cancel)
@@ -1019,6 +1030,25 @@ public partial class MainWindow : Window, IComponentConnector
 			suppressFileTreeSelection = false;
 		}
 	}
+
+    private async void ComparedFile_OnExpanded(object sender, RoutedEventArgs args)
+    {
+        if (sender is not Expander expander || expander.DataContext is not DiffFilePresentation file
+            || DataContext is not MainWindowViewModel vm) return;
+        expander.Tag = file;
+        var result = await vm.LoadComparedFileAsync(file);
+        if (result is not null && expander.IsExpanded && ReferenceEquals(expander.Tag, file))
+            expander.DataContext = result;
+    }
+
+    private void ComparedFile_OnCollapsed(object sender, RoutedEventArgs args)
+    {
+        if (sender is Expander { Tag: DiffFilePresentation file } expander)
+        {
+            expander.DataContext = file;
+            expander.Tag = null;
+        }
+    }
 
 	private static TreeViewItem? FindTreeViewItem(ItemsControl parent, object item)
 	{
@@ -1294,7 +1324,7 @@ public partial class MainWindow : Window, IComponentConnector
 		if (fileSelectionDragging)
 		{
 			e.Handled = true;
-			fileSelectionRectangle.Visibility = Visibility.Collapsed;
+			if (fileSelectionRectangle is not null) fileSelectionRectangle.Visibility = Visibility.Collapsed;
 			listBox.ReleaseMouseCapture();
 		}
 		fileSelectionList = null;
@@ -1311,7 +1341,7 @@ public partial class MainWindow : Window, IComponentConnector
 
 	private void UpdateDragSelection(Point current)
 	{
-		Canvas canvas = fileSelectionOverlay;
+		if (fileSelectionOverlay is not Canvas canvas || fileSelectionRectangle is null || fileSelectionList is null) return;
 		double num = Math.Clamp(Math.Min(fileSelectionStart.X, current.X), 0.0, canvas.ActualWidth);
 		double num2 = Math.Clamp(Math.Min(fileSelectionStart.Y, current.Y), 0.0, canvas.ActualHeight);
 		double num3 = Math.Clamp(Math.Max(fileSelectionStart.X, current.X), 0.0, canvas.ActualWidth);
@@ -1524,9 +1554,9 @@ public partial class MainWindow : Window, IComponentConnector
 	{
 		return strategy switch
 		{
-			PullStrategy.Rebase => "把本地修改接到远程更新之后",
-			PullStrategy.FastForwardOnly => "仅在没有分歧时更新",
-			_ => "保留双方修改并合并",
+			PullStrategy.Rebase => "把本地修改接到远程更新之后", 
+			PullStrategy.FastForwardOnly => "仅在没有分歧时更新", 
+			_ => "保留双方修改并合并", 
 		};
 	}
 
@@ -1564,11 +1594,11 @@ public partial class MainWindow : Window, IComponentConnector
 		{
 			GitOperationResult gitOperationResult = stashManagementWindow.Action switch
 			{
-				StashManagementAction.Save => await viewModel.SaveStashAsync(stashManagementWindow.StashMessage),
-				StashManagementAction.Apply => await viewModel.ApplyStashAsync(stashManagementWindow.SelectedIndex, pop: false),
-				StashManagementAction.Pop => await viewModel.ApplyStashAsync(stashManagementWindow.SelectedIndex, pop: true),
-				StashManagementAction.Delete => await viewModel.DeleteStashAsync(stashManagementWindow.SelectedIndex),
-				_ => null,
+				StashManagementAction.Save => await viewModel.SaveStashAsync(stashManagementWindow.StashMessage), 
+				StashManagementAction.Apply => await viewModel.ApplyStashAsync(stashManagementWindow.SelectedIndex, pop: false), 
+				StashManagementAction.Pop => await viewModel.ApplyStashAsync(stashManagementWindow.SelectedIndex, pop: true), 
+				StashManagementAction.Delete => await viewModel.DeleteStashAsync(stashManagementWindow.SelectedIndex), 
+				_ => null, 
 			};
 			if ((object)gitOperationResult != null)
 			{
@@ -1629,7 +1659,7 @@ public partial class MainWindow : Window, IComponentConnector
 			return;
 		}
 		GitIdentity? currentIdentity = await viewModel.GetCurrentIdentityAsync();
-		string text = Prompt("Git 身份", "用户名：", currentIdentity?.Name ?? string.Empty);
+		string text = Prompt("Git 身份", LocalPaths.Default.IsIsolated ? "隔离模式：身份仅保存到当前仓库。\n用户名：" : "用户名：", currentIdentity?.Name ?? string.Empty);
 		if (text == null)
 		{
 			return;
@@ -1637,7 +1667,7 @@ public partial class MainWindow : Window, IComponentConnector
 		string text2 = Prompt("Git 身份", "邮箱：", currentIdentity?.Email ?? string.Empty);
 		if (text2 != null)
 		{
-			MessageBoxResult messageBoxResult = MessageBox.Show(this, "选择“是”设置为所有仓库的默认身份；选择“否”只修改当前仓库。", "配置范围", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+			MessageBoxResult messageBoxResult = LocalPaths.Default.IsIsolated ? MessageBoxResult.No : MessageBox.Show(this, "选择“是”设置为所有仓库的默认身份；选择“否”只修改当前仓库。", "配置范围", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
 			if (messageBoxResult != MessageBoxResult.Cancel)
 			{
 				await viewModel.ConfigureIdentityAsync(new GitIdentity(text, text2), messageBoxResult == MessageBoxResult.Yes);
@@ -1757,13 +1787,13 @@ public partial class MainWindow : Window, IComponentConnector
 		{
 			var (directory, suggestedName) = tag switch
 			{
-				"folder" => (true, "新建文件夹"),
-				".md" => (false, "README.md"),
-				".docx" => (false, "新建 Word 文档.docx"),
-				".cs" => (false, "新建类.cs"),
-				".json" => (false, "data.json"),
-				".xml" => (false, "data.xml"),
-				_ => (false, "新建 文本文档.txt"),
+				"folder" => (true, "新建文件夹"), 
+				".md" => (false, "README.md"), 
+				".docx" => (false, "新建 Word 文档.docx"), 
+				".cs" => (false, "新建类.cs"), 
+				".json" => (false, "data.json"), 
+				".xml" => (false, "data.xml"), 
+				_ => (false, "新建 文本文档.txt"), 
 			};
 			await CreateFileSystemItemAsync(directory, suggestedName, (tag == "folder") ? null : tag);
 		}
@@ -1913,9 +1943,9 @@ public partial class MainWindow : Window, IComponentConnector
 	{
 		if (MessageBox.Show(DialogOwner, "采用" + side switch
 		{
-			ConflictSide.Ours => "当前版本（ours）",
-			ConflictSide.Theirs => "对方版本（theirs）",
-			_ => "当前工作区文件",
+			ConflictSide.Ours => "当前版本（ours）", 
+			ConflictSide.Theirs => "对方版本（theirs）", 
+			_ => "当前工作区文件", 
 		} + "的原始字节并标记该冲突为已解决？", "解决二进制冲突", MessageBoxButton.YesNo, MessageBoxImage.Exclamation) == MessageBoxResult.Yes)
 		{
 			await viewModel.ResolveSelectedBinaryConflictAsync(side);

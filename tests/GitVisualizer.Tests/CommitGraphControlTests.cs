@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Windows;
+using System.Windows.Media;
+using System.Reflection;
 using GitVisualizer.App.Controls;
 using GitVisualizer.Core;
 
@@ -7,6 +9,60 @@ namespace GitVisualizer.Tests;
 
 public sealed class CommitGraphControlTests
 {
+    [Fact]
+    public void CrossViewportConnectionSurvivesCullingAndInteractionReusesCaches()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var commits = Enumerable.Range(0, 10_000)
+                    .Select(i => CreateCommit(i.ToString("x8"), i == 0 ? [9999.ToString("x8")] :
+                        i == 1 ? [2.ToString("x8")] : [])).ToArray();
+                var graph = new CommitGraphControl { Items = new ObservableCollection<CommitNode>(commits) };
+                graph.Measure(new Size(800, 600));
+                graph.Arrange(new Rect(0, 0, 800, graph.DesiredSize.Height));
+                const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                object? Field(string name) => typeof(CommitGraphControl).GetField(name, flags)!.GetValue(graph);
+                void Set(string name, object value) => typeof(CommitGraphControl).GetField(name, flags)!.SetValue(graph, value);
+                void Render()
+                {
+                    var visual = new DrawingVisual();
+                    using var context = visual.RenderOpen();
+                    typeof(CommitGraphControl).GetMethod("OnRender", flags)!.Invoke(graph, [context]);
+                }
+                Render();
+                var nodes = Field("nodeById");
+                var edges = Field("edgeTree");
+                var layout = Field("layout");
+                graph.SelectedCommit = commits[5000];
+                Set("hoveredLane", 0);
+                Render();
+                Assert.Same(nodes, Field("nodeById"));
+                Assert.Same(edges, Field("edgeTree"));
+                Assert.Same(layout, Field("layout"));
+
+                // Both endpoints of the long edge are outside this viewport;
+                // the short edge near the first row must be culled.
+                Set("viewportTop", 250_000d);
+                Set("viewportBottom", 250_600d);
+                var connections = new DrawingVisual();
+                using (var context = connections.RenderOpen())
+                    typeof(CommitGraphControl).GetMethod("DrawParentConnections", flags)!
+                        .Invoke(graph, [context, nodes]);
+                var connection = Assert.IsType<GeometryDrawing>(Assert.Single(connections.Drawing.Children));
+                Assert.True(connection.Geometry.Bounds.Top < 250_000);
+                Assert.True(connection.Geometry.Bounds.Bottom > 250_600);
+            }
+            catch (Exception exception) { failure = exception; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        Assert.Null(failure);
+    }
+
     [Fact]
     public void DesiredWidthTracksTheAvailableViewportWidth()
     {

@@ -363,7 +363,7 @@ public sealed class RepositorySwitchingTests
         Assert.False(viewModel.CanSaveCurrentDocument);
         Assert.Contains($"@{oldCommit.ShortId}:", viewModel.CurrentDocument?.Path);
 
-        viewModel.ShowWorkingTreeCommand.Execute(null);
+        await viewModel.ShowWorkingTreeCommand.ExecuteAsync(null);
 
         Assert.False(viewModel.IsBrowsingHistoricalCommit);
         Assert.True(viewModel.CanModifyFileTree);
@@ -569,7 +569,7 @@ public sealed class RepositorySwitchingTests
     }
 
     [Fact]
-    public async Task ExternalChange_CanBeExplicitlyOverwrittenOrReloaded()
+    public async Task ExternalChange_AbortsOverwriteRetainsDraftOrReloads()
     {
         using var temporary = new TemporaryDirectory();
         var repositoryPath = Path.Combine(temporary.Path, "external-editor-change");
@@ -601,8 +601,9 @@ public sealed class RepositorySwitchingTests
         interaction.ExternalChangeAction = EditorSafetyAction.Save;
         await viewModel.SaveEditorCommand.ExecuteAsync(null);
 
-        Assert.Equal("保留编辑器内容", await File.ReadAllTextAsync(path));
-        Assert.False(viewModel.HasUnsavedEditorChanges);
+        Assert.Equal("外部内容", await File.ReadAllTextAsync(path));
+        Assert.Equal("保留编辑器内容", viewModel.EditorText);
+        Assert.True(viewModel.HasUnsavedEditorChanges);
 
         viewModel.EditorText = "这次放弃编辑器内容";
         await File.WriteAllTextAsync(path, "采用新的磁盘内容");
@@ -734,6 +735,17 @@ public sealed class RepositorySwitchingTests
         await viewModel.RefreshAsync();
         Assert.Equal(editedResult, viewModel.ConflictResultText);
         Assert.Single(conflictNotifications);
+        var originalBytes = await File.ReadAllBytesAsync(conflictPath);
+        var originalDigest = viewModel.SelectedConflict!.OriginalDocument!.OriginalByteDigest;
+        await File.WriteAllTextAsync(conflictPath, "外部冲突编辑");
+        await viewModel.RefreshAsync();
+        Assert.Equal(originalDigest, viewModel.SelectedConflict!.OriginalDocument!.OriginalByteDigest);
+        var rejected = await viewModel.ResolveSelectedConflictAsync();
+        Assert.False(rejected.Success);
+        Assert.Equal("外部冲突编辑", await File.ReadAllTextAsync(conflictPath));
+        Assert.Equal(editedResult, viewModel.ConflictResultText);
+        Assert.True(viewModel.HasConflicts);
+        await File.WriteAllBytesAsync(conflictPath, originalBytes);
         var resolved = await viewModel.ResolveSelectedConflictAsync();
 
         Assert.True(resolved.Success, resolved.ErrorMessage);
@@ -944,16 +956,59 @@ public sealed class RepositorySwitchingTests
         Assert.False(viewModel.HasUnsavedEditorChanges);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LegacyDraftRevalidatesSourceAfterRestorePrompt(bool changeDuringPrompt)
+    {
+        using var temporary = new TemporaryDirectory();
+        var root = Path.Combine(temporary.Path, "legacy-draft");
+        Directory.CreateDirectory(root);
+        var log = new MemoryOperationLogStore();
+        var recovery = new RecoveryService();
+        var git = new LibGitRepositoryService(recovery, log);
+        await CreateRepositoryAsync(git, root, "source");
+        var path = Path.Combine(root, "内容.txt");
+        var drafts = new GitVisualizer.Infrastructure.Persistence.EditorDraftStore(
+            new GitVisualizer.Infrastructure.LocalDataPaths(Path.Combine(temporary.Path, "data")));
+        await drafts.SaveAsync(new EditorDraft(root, path, "legacy draft", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+        var interaction = new RecordingEditorInteractionService
+        {
+            Action = EditorSafetyAction.Restore,
+            DraftPrompt = () => { if (changeDuringPrompt) File.WriteAllBytes(path, new byte[] { 0xd6, 0xd0, 0xce, 0xc4 }); }
+        };
+        using var viewModel = new MainWindowViewModel(git, new LibGitDiffService(),
+            new NoOpRepositoryWatcherFactory(), new FileWorkspaceService(), new WindowsShellNewFileService(),
+            new MemorySettingsStore(), log, recovery, new MemoryCredentialVault(), draftStore: drafts, editorInteraction: interaction);
+        Assert.True(await viewModel.OpenRepositoryAsync(root));
+        var opened = await viewModel.SelectFileAsync(Assert.Single(viewModel.FileTree, item => item.Name == "内容.txt"));
+        Assert.Equal(!changeDuringPrompt, opened);
+        Assert.Equal("legacy draft", (await drafts.LoadAsync(root, path))!.Text);
+        if (!changeDuringPrompt)
+        {
+            Assert.Equal("legacy draft", viewModel.EditorText);
+            Assert.True(viewModel.HasUnsavedEditorChanges);
+            Assert.NotNull(viewModel.CurrentDocument!.OriginalByteDigest);
+            await viewModel.SaveEditorCommand.ExecuteAsync(null);
+            Assert.Equal("legacy draft", File.ReadAllText(path));
+        }
+        else Assert.Equal(new byte[] { 0xd6, 0xd0, 0xce, 0xc4 }, File.ReadAllBytes(path));
+    }
+
     private sealed class RecordingEditorInteractionService : IEditorInteractionService
     {
         public EditorSafetyAction Action { get; set; } = EditorSafetyAction.Cancel;
         public EditorSafetyAction ExternalChangeAction { get; set; } = EditorSafetyAction.Cancel;
+        public System.Action? DraftPrompt { get; set; }
         public Task<EditorSafetyAction> ResolveUnsavedChangesAsync(
             TextDocument document, string reason, CancellationToken cancellationToken = default) =>
             Task.FromResult(Action);
         public Task<EditorSafetyAction> ResolveDraftAsync(
-            EditorDraft draft, CancellationToken cancellationToken = default) =>
-            Task.FromResult(Action);
+            EditorDraft draft, CancellationToken cancellationToken = default)
+        {
+            DraftPrompt?.Invoke();
+            return Task.FromResult(Action);
+        }
         public Task<EditorSafetyAction> ResolveExternalChangeAsync(
             TextDocument document, CancellationToken cancellationToken = default) =>
             Task.FromResult(ExternalChangeAction);

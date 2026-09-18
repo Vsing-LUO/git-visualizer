@@ -110,7 +110,7 @@ public interface IGitRepositoryService
         string repositoryPath, CancellationToken cancellationToken = default);
     Task<GitOperationResult> ResolveConflictAsync(
         string repositoryPath, string path, string resultText,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default, TextDocument? originalDocument = null);
     Task<GitOperationResult> ResolveBinaryConflictAsync(
         string repositoryPath, string path, ConflictSide side,
         CancellationToken cancellationToken = default);

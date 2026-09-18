@@ -64,8 +64,8 @@ public sealed class EditorInteractionService : IEditorInteractionService
 		cancellationToken.ThrowIfCancellationRequested();
 		var window = new EditorSafetyWindow(
 			"文件已在磁盘上更改",
-			$"{System.IO.Path.GetFileName(document.Path)} 已被其他程序或 Git 操作修改。\n\n覆盖将保留编辑器内容；重新载入将采用磁盘内容。",
-			"覆盖文件", EditorSafetyAction.Save,
+			$"{System.IO.Path.GetFileName(document.Path)} 已被其他程序或 Git 操作修改。\n\n保存已中止。保留草稿可继续核对编辑内容；重新载入将采用磁盘内容。",
+			"保留草稿", EditorSafetyAction.Cancel,
 			"重新载入", EditorSafetyAction.Discard)
 		{
 			Owner = Application.Current?.MainWindow

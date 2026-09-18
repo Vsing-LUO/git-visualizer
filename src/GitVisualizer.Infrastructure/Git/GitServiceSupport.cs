@@ -6,9 +6,6 @@ namespace GitVisualizer.Infrastructure.Git;
 
 internal static class GitServiceSupport
 {
-    private static readonly ConcurrentDictionary<string, SemaphoreSlim> RepositoryLocks =
-        new(StringComparer.OrdinalIgnoreCase);
-
     private static readonly HashSet<string> OfficeDocumentExtensions =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -19,7 +16,7 @@ internal static class GitServiceSupport
         };
 
     public static SemaphoreSlim LockFor(string repositoryPath) =>
-        RepositoryLocks.GetOrAdd(Path.GetFullPath(repositoryPath), _ => new SemaphoreSlim(1, 1));
+        RepositoryWriteLock.For(repositoryPath);
 
     public static Signature ResolveSignature(Repository repository, GitIdentity? identity)
     {

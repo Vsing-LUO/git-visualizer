@@ -7,11 +7,21 @@ namespace GitVisualizer.Infrastructure.Security;
 
 public sealed class WindowsCredentialVault : ICredentialVault
 {
+    private readonly LocalDataPaths paths;
+
+    public WindowsCredentialVault(LocalDataPaths? paths = null) => this.paths = paths ?? LocalPaths.Default;
+
+    private void EnsureProductionProfile()
+    {
+        if (paths.IsIsolated)
+            throw new InvalidOperationException("Native credentials are disabled for isolated data profiles. Inject an ICredentialVault test double.");
+    }
     private const uint CredTypeGeneric = 1;
     private const uint CredPersistLocalMachine = 2;
 
     public Task SaveAsync(string key, string secret, CancellationToken cancellationToken = default)
     {
+        EnsureProductionProfile();
         cancellationToken.ThrowIfCancellationRequested();
         var bytes = Encoding.Unicode.GetBytes(secret);
         var blob = Marshal.AllocCoTaskMem(bytes.Length + 2);
@@ -47,6 +57,7 @@ public sealed class WindowsCredentialVault : ICredentialVault
 
     public Task<string?> GetAsync(string key, CancellationToken cancellationToken = default)
     {
+        EnsureProductionProfile();
         cancellationToken.ThrowIfCancellationRequested();
         if (!CredRead(Target(key), CredTypeGeneric, 0, out var pointer))
         {
@@ -76,6 +87,7 @@ public sealed class WindowsCredentialVault : ICredentialVault
 
     public Task DeleteAsync(string key, CancellationToken cancellationToken = default)
     {
+        EnsureProductionProfile();
         cancellationToken.ThrowIfCancellationRequested();
         if (!CredDelete(Target(key), CredTypeGeneric, 0))
         {

@@ -67,6 +67,43 @@ public sealed class EditorDraftStoreTests
         }
     }
 
+    [Theory]
+    [InlineData("decrypt")]
+    [InlineData("parse")]
+    [InlineData("identity")]
+    public async Task DamagedDraftIsQuarantinedWithOriginalEncryptedBytes(string fault)
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = new LocalDataPaths(Path.Combine(directory.Path, "data"));
+        paths.EnsureCreated();
+        var repository = Path.Combine(directory.Path, "repo");
+        Directory.CreateDirectory(repository);
+        var document = Path.Combine(repository, "file.txt");
+        var store = new EditorDraftStore(paths);
+        var key = EditorDraftStore.DraftKey(repository, document);
+        var original = Path.Combine(paths.DraftDirectory, key + ".draft");
+        if (fault == "identity")
+        {
+            var payload = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+            { repositoryPath = repository, documentPath = Path.Combine(repository, "other.txt"), text = "important" });
+            File.WriteAllBytes(original, System.Security.Cryptography.ProtectedData.Protect(payload, null,
+                System.Security.Cryptography.DataProtectionScope.CurrentUser));
+        }
+        else File.WriteAllBytes(original, fault == "decrypt" ? new byte[] { 1, 2, 3 } :
+            System.Security.Cryptography.ProtectedData.Protect(Encoding.UTF8.GetBytes("not json"), null,
+                System.Security.Cryptography.DataProtectionScope.CurrentUser));
+        var bytes = File.ReadAllBytes(original);
+        Assert.Null(await store.LoadAsync(repository, document));
+        var quarantine = Assert.Single(Directory.GetFiles(Path.Combine(paths.DraftDirectory, "quarantine")));
+        Assert.Equal(bytes, File.ReadAllBytes(quarantine));
+        Assert.False(File.Exists(original));
+        File.SetLastWriteTimeUtc(quarantine, DateTime.UtcNow.AddDays(-60));
+        await store.PruneAsync();
+        await store.SaveAsync(new EditorDraft(repository, document, "new draft", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+        await store.DeleteAsync(repository, document);
+        Assert.Equal(bytes, File.ReadAllBytes(quarantine));
+    }
+
     private static string DraftFile(string repositoryPath, string documentPath) =>
         Path.Combine(
             LocalPaths.DraftDirectory,

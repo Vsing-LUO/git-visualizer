@@ -5,6 +5,10 @@ namespace GitVisualizer.Infrastructure.Persistence;
 
 public sealed class SettingsStore : ISettingsStore
 {
+    private readonly LocalDataPaths dataPaths;
+
+    public SettingsStore(LocalDataPaths? paths = null) => dataPaths = paths ?? LocalPaths.Default;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -15,8 +19,8 @@ public sealed class SettingsStore : ISettingsStore
 
     public async Task<AppSettings> LoadAsync(CancellationToken cancellationToken = default)
     {
-        LocalPaths.EnsureCreated();
-        if (!File.Exists(LocalPaths.SettingsFile))
+        dataPaths.EnsureCreated();
+        if (!File.Exists(dataPaths.SettingsFile))
         {
             return AppSettings.Default;
         }
@@ -24,7 +28,7 @@ public sealed class SettingsStore : ISettingsStore
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await using var stream = File.OpenRead(LocalPaths.SettingsFile);
+            await using var stream = File.OpenRead(dataPaths.SettingsFile);
             return await JsonSerializer.DeserializeAsync<AppSettings>(stream, JsonOptions, cancellationToken)
                        .ConfigureAwait(false)
                    ?? AppSettings.Default;
@@ -41,18 +45,18 @@ public sealed class SettingsStore : ISettingsStore
 
     public async Task SaveAsync(AppSettings settings, CancellationToken cancellationToken = default)
     {
-        LocalPaths.EnsureCreated();
+        dataPaths.EnsureCreated();
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var temporary = LocalPaths.SettingsFile + ".tmp";
+            var temporary = dataPaths.SettingsFile + ".tmp";
             await using (var stream = File.Create(temporary))
             {
                 await JsonSerializer.SerializeAsync(stream, settings, JsonOptions, cancellationToken)
                     .ConfigureAwait(false);
             }
 
-            File.Move(temporary, LocalPaths.SettingsFile, true);
+            File.Move(temporary, dataPaths.SettingsFile, true);
         }
         finally
         {

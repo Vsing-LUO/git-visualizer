@@ -4,9 +4,11 @@ using System.Collections.Specialized;
 using System.Globalization;
 using System.Linq;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using GitVisualizer.Core;
+using GitVisualizer.Infrastructure.Diagnostics;
 
 namespace GitVisualizer.App.Controls;
 
@@ -50,6 +52,109 @@ public sealed class CommitGraphControl : FrameworkElement
 	};
 
 	private IReadOnlyList<LayoutNode> layout = Array.Empty<LayoutNode>();
+    private Dictionary<string, LayoutNode> nodeById = new(StringComparer.Ordinal);
+    private Dictionary<string, BranchInfo[]> branchesByTip = new(StringComparer.Ordinal);
+    private Dictionary<string, TagInfo[]> tagsByTarget = new(StringComparer.Ordinal);
+    private Dictionary<string, GitHistoryEvent[]> eventsByCommit = new(StringComparer.Ordinal);
+    private Dictionary<string, BranchDisplayState> branchStates = new(StringComparer.Ordinal);
+    private int highestLane;
+    private bool layoutDirty;
+    private bool renderCacheDirty = true;
+    private int visibleFirst;
+    private int visibleLast;
+    private double viewportTop;
+    private double viewportBottom;
+    private ScrollViewer? scrollOwner;
+    private sealed record Edge(int Lane, double Top, double Bottom, Geometry Geometry);
+    private sealed class EdgeTree(Edge edge)
+    {
+        internal Edge Edge = edge;
+        internal EdgeTree? Left, Right;
+        internal double MaxBottom = edge.Bottom;
+    }
+    private EdgeTree? edgeTree;
+
+    private IEnumerable<LayoutNode> VisibleNodes()
+    {
+        for (int i = visibleFirst; i < visibleLast; i++) yield return layout[i];
+    }
+
+    private void UpdateViewport()
+    {
+        DependencyObject? parent = VisualTreeHelper.GetParent(this);
+        while (parent is not null && parent is not ScrollViewer) parent = VisualTreeHelper.GetParent(parent);
+        if (parent is ScrollViewer viewer)
+        {
+            if (!ReferenceEquals(scrollOwner, viewer))
+            {
+                if (scrollOwner is not null) scrollOwner.ScrollChanged -= OnViewportChanged;
+                scrollOwner = viewer;
+                viewer.ScrollChanged += OnViewportChanged;
+            }
+            viewportTop = Math.Max(0, -TransformToAncestor(viewer).Transform(new Point()).Y);
+            viewportBottom = viewportTop + (viewer.ViewportHeight > 0 ? viewer.ViewportHeight : viewer.ActualHeight);
+        }
+        else { viewportTop = 0; viewportBottom = ActualHeight; }
+        visibleFirst = Math.Clamp((int)Math.Floor(viewportTop / RowHeight) - 1, 0, layout.Count);
+        visibleLast = Math.Clamp((int)Math.Ceiling(viewportBottom / RowHeight) + 1, visibleFirst, layout.Count);
+    }
+
+    private void OnViewportChanged(object sender, ScrollChangedEventArgs args) => InvalidateVisual();
+
+    private void EnsureRenderCache()
+    {
+        if (!renderCacheDirty) return;
+        nodeById = layout.ToDictionary(x => x.Commit.Id, StringComparer.Ordinal);
+        branchesByTip = (Branches ?? []).Where(x => !string.IsNullOrEmpty(x.TipId)).GroupBy(x => x.TipId)
+            .ToDictionary(x => x.Key, x => x.ToArray(), StringComparer.Ordinal);
+        tagsByTarget = (Tags ?? []).Where(x => !string.IsNullOrEmpty(x.TargetId)).GroupBy(x => x.TargetId)
+            .ToDictionary(x => x.Key, x => x.ToArray(), StringComparer.Ordinal);
+        eventsByCommit = (Events ?? []).Where(x => !string.IsNullOrEmpty(x.CommitId)).GroupBy(x => x.CommitId)
+            .ToDictionary(x => x.Key, x => x.OrderBy(e => e.OccurredAt).ToArray(), StringComparer.Ordinal);
+        branchStates = (Branches ?? []).ToDictionary(x => x.CanonicalName, x => ResolveBranchDisplayState(x, nodeById));
+        highestLane = layout.Count == 0 ? 0 : layout.Max(x => x.Lane);
+        var edges = new List<Edge>();
+        foreach (var item in layout)
+        foreach (var parentId in item.Commit.ParentIds)
+        {
+            var x = LaneX(item.Lane);
+            var y = RowY(item.Index);
+            Geometry geometry;
+            double endY;
+            if (!nodeById.TryGetValue(parentId, out var parent))
+            {
+                endY = y + 25;
+                geometry = new LineGeometry(new Point(x, y), new Point(x, endY));
+            }
+            else
+            {
+                endY = RowY(parent.Index);
+                var curve = new StreamGeometry();
+                using (var context = curve.Open())
+                {
+                    context.BeginFigure(new Point(x, y), false, false);
+                    var controlY = y + Math.Min(36, Math.Max(50, endY - y) / 2);
+                    context.BezierTo(new Point(x, controlY), new Point(LaneX(parent.Lane), controlY),
+                        new Point(LaneX(parent.Lane), endY), true, false);
+                }
+                geometry = curve;
+            }
+            geometry.Freeze();
+            edges.Add(new Edge(item.Lane, Math.Min(y, endY), Math.Max(y, endY), geometry));
+        }
+        var ordered = edges.OrderBy(e => e.Top).ToArray();
+        edgeTree = Build(0, ordered.Length);
+        renderCacheDirty = false;
+        EdgeTree? Build(int first, int end)
+        {
+            if (first >= end) return null;
+            var middle = first + (end - first) / 2;
+            var node = new EdgeTree(ordered[middle]) { Left = Build(first, middle), Right = Build(middle + 1, end) };
+            node.MaxBottom = Math.Max(node.MaxBottom, Math.Max(node.Left?.MaxBottom ?? 0, node.Right?.MaxBottom ?? 0));
+            return node;
+        }
+    }
+
 
 	private readonly List<BranchBadgeHit> branchBadgeHits = new List<BranchBadgeHit>();
 
@@ -69,9 +174,9 @@ public sealed class CommitGraphControl : FrameworkElement
 
 	public static readonly DependencyProperty SelectedCommitProperty = DependencyProperty.Register("SelectedCommit", typeof(CommitNode), typeof(CommitGraphControl), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender | FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
 
-	public static readonly DependencyProperty BranchesProperty = DependencyProperty.Register("Branches", typeof(IEnumerable<BranchInfo>), typeof(CommitGraphControl), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender, OnReferencesChanged));
+	public static readonly DependencyProperty BranchesProperty = DependencyProperty.Register("Branches", typeof(IEnumerable<BranchInfo>), typeof(CommitGraphControl), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender, OnBranchesChanged));
 
-	public static readonly DependencyProperty TagsProperty = DependencyProperty.Register("Tags", typeof(IEnumerable<TagInfo>), typeof(CommitGraphControl), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender, OnReferencesChanged));
+	public static readonly DependencyProperty TagsProperty = DependencyProperty.Register("Tags", typeof(IEnumerable<TagInfo>), typeof(CommitGraphControl), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender, OnTagsChanged));
 
 	public static readonly DependencyProperty EventsProperty = DependencyProperty.Register("Events", typeof(IEnumerable<GitHistoryEvent>), typeof(CommitGraphControl), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender, OnEventsChanged));
 
@@ -195,18 +300,29 @@ public sealed class CommitGraphControl : FrameworkElement
 		commitGraphControl.RebuildLayout();
 	}
 
-	private static void OnReferencesChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+	private static void OnBranchesChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
 	{
 		CommitGraphControl commitGraphControl = (CommitGraphControl)dependencyObject;
 		if (args.OldValue is INotifyCollectionChanged notifyCollectionChanged)
 		{
-			notifyCollectionChanged.CollectionChanged -= commitGraphControl.OnReferencesCollectionChanged;
+			notifyCollectionChanged.CollectionChanged -= commitGraphControl.OnBranchesCollectionChanged;
 		}
 		if (args.NewValue is INotifyCollectionChanged notifyCollectionChanged2)
 		{
-			notifyCollectionChanged2.CollectionChanged += commitGraphControl.OnReferencesCollectionChanged;
+			notifyCollectionChanged2.CollectionChanged += commitGraphControl.OnBranchesCollectionChanged;
 		}
 		commitGraphControl.RebuildLayout();
+	}
+
+	private static void OnTagsChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+	{
+		CommitGraphControl graph = (CommitGraphControl)dependencyObject;
+		if (args.OldValue is INotifyCollectionChanged oldItems)
+			oldItems.CollectionChanged -= graph.OnTagsCollectionChanged;
+		if (args.NewValue is INotifyCollectionChanged newItems)
+			newItems.CollectionChanged += graph.OnTagsCollectionChanged;
+		graph.renderCacheDirty = true;
+		graph.InvalidateVisual();
 	}
 
 	private static void OnEventsChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
@@ -220,6 +336,7 @@ public sealed class CommitGraphControl : FrameworkElement
 		{
 			notifyCollectionChanged2.CollectionChanged += commitGraphControl.OnEventsCollectionChanged;
 		}
+		commitGraphControl.renderCacheDirty = true;
 		commitGraphControl.InvalidateVisual();
 	}
 
@@ -238,27 +355,41 @@ public sealed class CommitGraphControl : FrameworkElement
 
 	private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args)
 	{
+		// A history page adds up to 200 nodes in one UI turn. Defer the O(n) layout
+		// until the next measure/render pass so it is built once for the page.
+		layoutDirty = true;
+		InvalidateMeasure();
+		InvalidateVisual();
+	}
+
+	private void OnBranchesCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args)
+	{
 		RebuildLayout();
 	}
 
-	private void OnReferencesCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args)
+	private void OnTagsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args)
 	{
-		RebuildLayout();
+		renderCacheDirty = true;
+		InvalidateVisual();
 	}
 
 	private void OnEventsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args)
 	{
+        renderCacheDirty = true;
 		InvalidateVisual();
 	}
 
 	protected override Size MeasureOverride(Size availableSize)
 	{
+		EnsureLayout();
 		return new Size(double.IsInfinity(availableSize.Width) ? 900.0 : Math.Max(availableSize.Width, 1.0), Math.Max((double)layout.Count * 50.0, 80.0));
 	}
 
 	protected override void OnRender(DrawingContext drawingContext)
 	{
+		using var measurement = PerformanceRecorder.Begin(PerformanceOperation.GraphRender);
 		base.OnRender(drawingContext);
+		EnsureLayout();
 		Brush brush = (TryFindResource(SystemColors.ControlTextBrushKey) as Brush) ?? Brushes.Black;
 		Brush brush2 = brush.Clone();
 		brush2.Opacity = 0.62;
@@ -267,14 +398,9 @@ public sealed class CommitGraphControl : FrameworkElement
 		Brush brush4 = ((TryFindResource(SystemColors.HighlightBrushKey) as Brush) ?? Brushes.DodgerBlue).Clone();
 		brush4.Opacity = 0.72;
 		double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
-		Dictionary<string, LayoutNode> nodeById = layout.ToDictionary<LayoutNode, string>((LayoutNode item) => item.Commit.Id, StringComparer.Ordinal);
-		BranchInfo[] source = Branches?.ToArray() ?? Array.Empty<BranchInfo>();
-		TagInfo[] source2 = Tags?.ToArray() ?? Array.Empty<TagInfo>();
-		GitHistoryEvent[] source3 = Events?.ToArray() ?? Array.Empty<GitHistoryEvent>();
-		Dictionary<string, BranchInfo[]> branchesByTip = source.Where((BranchInfo branch) => !string.IsNullOrEmpty(branch.TipId)).GroupBy<BranchInfo, string>((BranchInfo branch) => branch.TipId, StringComparer.Ordinal).ToDictionary<IGrouping<string, BranchInfo>, string, BranchInfo[]>((IGrouping<string, BranchInfo> group) => group.Key, (IGrouping<string, BranchInfo> group) => group.ToArray(), StringComparer.Ordinal);
-		Dictionary<string, TagInfo[]> tagsByTarget = source2.Where((TagInfo tag) => !string.IsNullOrEmpty(tag.TargetId)).GroupBy<TagInfo, string>((TagInfo tag) => tag.TargetId, StringComparer.Ordinal).ToDictionary<IGrouping<string, TagInfo>, string, TagInfo[]>((IGrouping<string, TagInfo> group) => group.Key, (IGrouping<string, TagInfo> group) => group.ToArray(), StringComparer.Ordinal);
-		Dictionary<string, GitHistoryEvent[]> eventsByCommit = source3.Where((GitHistoryEvent historyEvent) => !string.IsNullOrEmpty(historyEvent.CommitId)).GroupBy<GitHistoryEvent, string>((GitHistoryEvent historyEvent) => historyEvent.CommitId, StringComparer.Ordinal).ToDictionary<IGrouping<string, GitHistoryEvent>, string, GitHistoryEvent[]>((IGrouping<string, GitHistoryEvent> group) => group.Key, (IGrouping<string, GitHistoryEvent> group) => group.OrderBy((GitHistoryEvent historyEvent) => historyEvent.OccurredAt).ToArray(), StringComparer.Ordinal);
-		int num = ((layout.Count != 0) ? layout.Max((LayoutNode item) => item.Lane) : 0);
+        EnsureRenderCache();
+        UpdateViewport();
+        int num = highestLane;
 		graphTextStart = GetCommitTextStart();
 		renderedHighestLane = ((!IsGraphCollapsed) ? num : 0);
 		branchBadgeHits.Clear();
@@ -289,7 +415,7 @@ public sealed class CommitGraphControl : FrameworkElement
 		{
 			DrawParentConnections(drawingContext, nodeById);
 		}
-		foreach (LayoutNode item in layout)
+		foreach (LayoutNode item in VisibleNodes())
 		{
 			DrawCommit(drawingContext, item, brush, brush2, branchesByTip, tagsByTarget, eventsByCommit, nodeById, pixelsPerDip);
 		}
@@ -311,9 +437,11 @@ public sealed class CommitGraphControl : FrameworkElement
 				EndLineCap = PenLineCap.Round
 			};
 			pen.Freeze();
-			drawingContext.DrawLine(pen, new Point(x, RowY(0)), new Point(x, RowY(layout.Count - 1)));
+			var first = Math.Max(RowY(0), viewportTop - RowHeight);
+			var last = Math.Min(RowY(layout.Count - 1), viewportBottom + RowHeight);
+			if (last >= first) drawingContext.DrawLine(pen, new Point(x, first), new Point(x, last));
 		}
-		foreach (LayoutNode item in layout)
+		foreach (LayoutNode item in VisibleNodes())
 		{
 			Point center = new Point(x, RowY(item.Index));
 			drawingContext.DrawEllipse(CreateLaneBrush(0, 0.96), new Pen(Brushes.White, 1.5), center, 6.0, 6.0);
@@ -326,43 +454,26 @@ public sealed class CommitGraphControl : FrameworkElement
 
 	private void DrawSelection(DrawingContext drawingContext, Brush selectionFill, Brush selectionBorder)
 	{
-		LayoutNode layoutNode = layout.FirstOrDefault((LayoutNode item) => string.Equals(item.Commit.Id, SelectedCommit?.Id, StringComparison.Ordinal));
+		LayoutNode? layoutNode = SelectedCommit is null ? null : nodeById.GetValueOrDefault(SelectedCommit.Id);
 		if ((object)layoutNode != null)
 		{
 			drawingContext.DrawRoundedRectangle(selectionFill, new Pen(selectionBorder, 1.0), new Rect(1.0, (double)layoutNode.Index * 50.0 + 1.0, Math.Max(0.0, base.ActualWidth - 2.0), 48.0), 4.0, 4.0);
 		}
 	}
 
-	private void DrawParentConnections(DrawingContext drawingContext, IReadOnlyDictionary<string, LayoutNode> nodeById)
-	{
-		foreach (LayoutNode item in layout)
-		{
-			double x = LaneX(item.Lane);
-			double num = RowY(item.Index);
-			foreach (string parentId in item.Commit.ParentIds)
-			{
-				bool isHovered = hoveredLane == item.Lane;
-				Pen pen = CreateLanePen(item.Lane, isHovered);
-				if (!nodeById.TryGetValue(parentId, out LayoutNode value))
-				{
-					drawingContext.DrawLine(pen, new Point(x, num), new Point(x, num + 25.0));
-					continue;
-				}
-				double x2 = LaneX(value.Lane);
-				double num2 = RowY(value.Index);
-				StreamGeometry streamGeometry = new StreamGeometry();
-				using (StreamGeometryContext streamGeometryContext = streamGeometry.Open())
-				{
-					streamGeometryContext.BeginFigure(new Point(x, num), isFilled: false, isClosed: false);
-					double num3 = Math.Max(50.0, num2 - num);
-					double y = num + Math.Min(36.0, num3 / 2.0);
-					streamGeometryContext.BezierTo(new Point(x, y), new Point(x2, y), new Point(x2, num2), isStroked: true, isSmoothJoin: false);
-				}
-				streamGeometry.Freeze();
-				drawingContext.DrawGeometry(null, pen, streamGeometry);
-			}
-		}
-	}
+    private void DrawParentConnections(DrawingContext drawingContext, IReadOnlyDictionary<string, LayoutNode> nodes)
+    {
+        Draw(edgeTree);
+        void Draw(EdgeTree? node)
+        {
+            if (node is null || node.MaxBottom < viewportTop - RowHeight) return;
+            Draw(node.Left);
+            if (node.Edge.Top > viewportBottom + RowHeight) return;
+            if (node.Edge.Bottom >= viewportTop - RowHeight)
+                drawingContext.DrawGeometry(null, CreateLanePen(node.Edge.Lane, hoveredLane == node.Edge.Lane), node.Edge.Geometry);
+            Draw(node.Right);
+        }
+    }
 
 	private void DrawCommit(DrawingContext drawingContext, LayoutNode item, Brush foreground, Brush secondary, IReadOnlyDictionary<string, BranchInfo[]> branchesByTip, IReadOnlyDictionary<string, TagInfo[]> tagsByTarget, IReadOnlyDictionary<string, GitHistoryEvent[]> eventsByCommit, IReadOnlyDictionary<string, LayoutNode> nodeById, double dpi)
 	{
@@ -402,7 +513,7 @@ public sealed class CommitGraphControl : FrameworkElement
 				orderby branch.IsCurrent descending, branch.IsRemote
 				select branch).ThenBy<BranchInfo, string>((BranchInfo branch) => branch.FriendlyName, StringComparer.CurrentCulture))
 			{
-				num2 = DrawBranchBadge(drawingContext, item3, ResolveBranchDisplayState(item3, nodeById), item.Lane, num2, num + 2.0, dpi);
+				num2 = DrawBranchBadge(drawingContext, item3, branchStates.GetValueOrDefault(item3.CanonicalName), item.Lane, num2, num + 2.0, dpi);
 			}
 		}
 		if (tagsByTarget.TryGetValue(item.Commit.Id, out TagInfo[] value2))
@@ -440,12 +551,12 @@ public sealed class CommitGraphControl : FrameworkElement
 		bool flag3 = branch.IsCurrent | flag | flag2;
 		string text = state switch
 		{
-			BranchDisplayState.Current => "当前",
-			BranchDisplayState.Main => "主分支",
-			BranchDisplayState.Merged => "已合并",
-			BranchDisplayState.Active => "活跃",
-			BranchDisplayState.Remote => "远程",
-			_ => string.Empty,
+			BranchDisplayState.Current => "当前", 
+			BranchDisplayState.Main => "主分支", 
+			BranchDisplayState.Merged => "已合并", 
+			BranchDisplayState.Active => "活跃", 
+			BranchDisplayState.Remote => "远程", 
+			_ => string.Empty, 
 		};
 		string text2 = (string.IsNullOrEmpty(text) ? branch.FriendlyName : (branch.FriendlyName + " · " + text));
 		Brush brush;
@@ -466,9 +577,9 @@ public sealed class CommitGraphControl : FrameworkElement
 		Rect rect = new Rect(startX, top, num, 18.0);
 		object color = state switch
 		{
-			BranchDisplayState.Remote => Color.FromRgb(108, 117, 125),
-			BranchDisplayState.Merged => Color.FromRgb(125, 133, 140),
-			_ => LaneColor(lane),
+			BranchDisplayState.Remote => Color.FromRgb(108, 117, 125), 
+			BranchDisplayState.Merged => Color.FromRgb(125, 133, 140), 
+			_ => LaneColor(lane), 
 		};
 		SolidColorBrush solidColorBrush = new SolidColorBrush((Color)color)
 		{
@@ -490,13 +601,13 @@ public sealed class CommitGraphControl : FrameworkElement
 	{
 		(string item, Color item2) = historyEvent.Kind switch
 		{
-			GitHistoryEventKind.BranchCreated => ("分叉 · " + historyEvent.BranchName, Color.FromRgb(126, 87, 194)),
-			GitHistoryEventKind.BranchDeleted => ("已删除 · " + historyEvent.BranchName, Color.FromRgb(176, 75, 75)),
-			GitHistoryEventKind.Checkout => ("checkout", Color.FromRgb(44, 123, 229)),
-			GitHistoryEventKind.Reset => ("reset", Color.FromRgb(219, 126, 36)),
-			GitHistoryEventKind.Merge => ("merge", Color.FromRgb(38, 145, 96)),
-			GitHistoryEventKind.Revert => ("revert", Color.FromRgb(204, 82, 82)),
-			_ => (historyEvent.Kind.ToString(), Color.FromRgb(108, 117, 125)),
+			GitHistoryEventKind.BranchCreated => ("分叉 · " + historyEvent.BranchName, Color.FromRgb(126, 87, 194)), 
+			GitHistoryEventKind.BranchDeleted => ("已删除 · " + historyEvent.BranchName, Color.FromRgb(176, 75, 75)), 
+			GitHistoryEventKind.Checkout => ("checkout", Color.FromRgb(44, 123, 229)), 
+			GitHistoryEventKind.Reset => ("reset", Color.FromRgb(219, 126, 36)), 
+			GitHistoryEventKind.Merge => ("merge", Color.FromRgb(38, 145, 96)), 
+			GitHistoryEventKind.Revert => ("revert", Color.FromRgb(204, 82, 82)), 
+			_ => (historyEvent.Kind.ToString(), Color.FromRgb(108, 117, 125)), 
 		};
 		SolidColorBrush solidColorBrush = new SolidColorBrush(item2);
 		solidColorBrush.Freeze();
@@ -686,6 +797,7 @@ public sealed class CommitGraphControl : FrameworkElement
 
 	private void RebuildLayout()
 	{
+		layoutDirty = false;
 		CommitNode[] array = Items?.ToArray() ?? Array.Empty<CommitNode>();
 		Dictionary<string, CommitNode> dictionary = array.ToDictionary<CommitNode, string>((CommitNode commit) => commit.Id, StringComparer.Ordinal);
 		string text = Branches?.FirstOrDefault((BranchInfo branch) => string.Equals(branch.FriendlyName, SelectedBranchName, StringComparison.Ordinal))?.TipId;
@@ -695,7 +807,7 @@ public sealed class CommitGraphControl : FrameworkElement
 			text2 = array.FirstOrDefault()?.Id;
 		}
 		HashSet<string> hashSet = BuildFirstParentPath(text2, dictionary);
-		List<string> list = new List<string> { text2 };
+		List<string> list = text2 is null ? new List<string>() : new List<string> { text2 };
 		List<LayoutNode> list2 = new List<LayoutNode>(array.Length);
 		for (int num = 0; num < array.Length; num++)
 		{
@@ -765,8 +877,15 @@ public sealed class CommitGraphControl : FrameworkElement
 			list2.Add(new LayoutNode(commitNode, num2, num));
 		}
 		layout = list2;
+        highestLane = layout.Count == 0 ? 0 : layout.Max(x => x.Lane);
+        renderCacheDirty = true;
 		InvalidateMeasure();
 		InvalidateVisual();
+	}
+
+	private void EnsureLayout()
+	{
+		if (layoutDirty) RebuildLayout();
 	}
 
 	private static HashSet<string> BuildFirstParentPath(string? tipId, IReadOnlyDictionary<string, CommitNode> commitById)
@@ -807,6 +926,7 @@ public sealed class CommitGraphControl : FrameworkElement
 
 	internal int? GetLaneForCommit(string commitId)
 	{
+		EnsureLayout();
 		return layout.FirstOrDefault((LayoutNode item) => string.Equals(item.Commit.Id, commitId, StringComparison.Ordinal))?.Lane;
 	}
 
@@ -822,11 +942,12 @@ public sealed class CommitGraphControl : FrameworkElement
 
 	internal double GetCommitTextStart()
 	{
+		EnsureLayout();
 		if (IsGraphCollapsed)
 		{
 			return 52.0;
 		}
-		int highestLane = ((layout.Count != 0) ? layout.Max((LayoutNode item) => item.Lane) : 0);
+		int highestLane = this.highestLane;
 		double farthestLaneX = LaneX(highestLane);
 		double previousTextStart = Math.Max(132.0, 22.0 + (double)(highestLane + 1) * 28.0 + 24.0);
 		return farthestLaneX + (previousTextStart - farthestLaneX) * CommitTextDistanceScale;

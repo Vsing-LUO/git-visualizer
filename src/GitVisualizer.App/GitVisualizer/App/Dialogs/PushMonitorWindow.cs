@@ -43,12 +43,12 @@ public partial class PushMonitorWindow : Window, IComponentConnector
 		{
 			string text = progress.Stage switch
 			{
-				GitPushProgressStage.Connecting => "连接远程仓库",
-				GitPushProgressStage.Negotiating => "协商远程引用",
-				GitPushProgressStage.Packing => "打包对象",
-				GitPushProgressStage.Transferring => "上传对象",
-				GitPushProgressStage.UpdatingTracking => "更新本地跟踪分支",
-				_ => "正在推送",
+				GitPushProgressStage.Connecting => "连接远程仓库", 
+				GitPushProgressStage.Negotiating => "协商远程引用", 
+				GitPushProgressStage.Packing => "打包对象", 
+				GitPushProgressStage.Transferring => "上传对象", 
+				GitPushProgressStage.UpdatingTracking => "更新本地跟踪分支", 
+				_ => "正在推送", 
 			};
 			StageText.Text = text;
 			if (progress.Total > 0)

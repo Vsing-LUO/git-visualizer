@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Window x:Class="GitVisualizer.App.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:GitVisualizer.App" xmlns:controls="clr-namespace:GitVisualizer.App.Controls" xmlns:converters="clr-namespace:GitVisualizer.App.Converters" xmlns:avalon="http://icsharpcode.net/sharpdevelop/avalonedit" Title="{DynamicResource App.Title}" Icon="{StaticResource AppLogoImage}" Width="1624" Height="968" MinWidth="1120" MinHeight="720" WindowStartupLocation="CenterScreen" Background="{StaticResource AppBackgroundBrush}" Foreground="{StaticResource PrimaryTextBrush}" FontFamily="Microsoft YaHei UI, Segoe UI" UseLayoutRounding="True" SnapsToDevicePixels="True" AllowDrop="True" Drop="Window_OnDrop" DragOver="Window_OnDragOver">
   <FrameworkElement.Resources>
     <ResourceDictionary>
@@ -300,7 +300,13 @@
                 </FrameworkElement.ContextMenu>
               </Button>
             </DockPanel>
-            <TreeView Name="FileTreeView" Grid.Row="1" ItemTemplate="{StaticResource FileTreeTemplate}" ItemsSource="{Binding FileTree}" SelectedItemChanged="FileTree_OnSelectedItemChanged" MouseDoubleClick="FileTree_OnMouseDoubleClick">
+            <TreeView Name="FileTreeView" Grid.Row="1" ItemTemplate="{StaticResource FileTreeTemplate}" ItemsSource="{Binding FileTree}" SelectedItemChanged="FileTree_OnSelectedItemChanged" MouseDoubleClick="FileTree_OnMouseDoubleClick" VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling" ScrollViewer.CanContentScroll="True">
+              <TreeView.ItemContainerStyle>
+                <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
+                  <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                  <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+                </Style>
+              </TreeView.ItemContainerStyle>
               <FrameworkElement.ContextMenu>
                 <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                   <MenuItem Header="新建文件" IsEnabled="{Binding CanModifyFileTree}" Click="NewFile_OnClick" />
@@ -574,7 +580,7 @@
                 <ItemsControl Margin="5" ItemsSource="{Binding DiffFiles}">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                      <Expander Margin="2,2,2,7" IsExpanded="False">
+                      <Expander Margin="2,2,2,7" IsExpanded="False" Expanded="ComparedFile_OnExpanded" Collapsed="ComparedFile_OnCollapsed">
                         <HeaderedContentControl.Header>
                           <Border MinWidth="520" Padding="9">
                             <StackPanel>
@@ -636,12 +642,13 @@
               <RowDefinition Height="*" />
             </Grid.RowDefinitions>
             <DockPanel Margin="5">
+              <Button DockPanel.Dock="Right" Content="外部打开" Command="{Binding OpenCurrentDocumentExternallyCommand}" ToolTip="{Binding CurrentDocument.ReadOnlyReason}" Visibility="{Binding CanOpenCurrentDocumentExternally, Converter={StaticResource BoolToVisibility}}" />
               <Button DockPanel.Dock="Right" Content="保存并暂存" Foreground="{StaticResource SuccessBrush}" Command="{Binding SaveAndStageEditorCommand}" Visibility="{Binding CanSaveCurrentDocument, Converter={StaticResource BoolToVisibility}}" />
               <Button DockPanel.Dock="Right" Content="{DynamicResource Action.Save}" Foreground="{StaticResource AccentBrightBrush}" Command="{Binding SaveEditorCommand}" Visibility="{Binding CanSaveCurrentDocument, Converter={StaticResource BoolToVisibility}}" />
               <TextBlock DockPanel.Dock="Right" Margin="8,0" Text="未保存" Foreground="#E08A1E" VerticalAlignment="Center" Visibility="{Binding HasUnsavedEditorChanges, Converter={StaticResource BoolToVisibility}}" />
               <TextBlock VerticalAlignment="Center" Margin="9,0" Foreground="{StaticResource SecondaryTextBrush}" TextTrimming="CharacterEllipsis" Text="{Binding CurrentDocument.Path}" ToolTip="{Binding CurrentDocument.Path}" />
             </DockPanel>
-            <avalon:TextEditor Grid.Row="1" Margin="8,0,8,8" FontFamily="Cascadia Mono,Consolas" FontSize="13" Background="#0F172A" Foreground="#F2F5FA" LineNumbersForeground="#64748B" ShowLineNumbers="True" WordWrap="False" controls:AvalonEditBinding.Text="{Binding EditorText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+            <avalon:TextEditor IsReadOnly="{Binding CurrentDocument.IsReadOnly}" Grid.Row="1" Margin="8,0,8,8" FontFamily="Cascadia Mono,Consolas" FontSize="13" Background="#0F172A" Foreground="#F2F5FA" LineNumbersForeground="#64748B" ShowLineNumbers="True" WordWrap="False" controls:AvalonEditBinding.Text="{Binding EditorText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
               <FrameworkElement.Style>
                 <Style TargetType="{x:Type avalon:TextEditor}">
                   <Setter Property="Visibility" Value="Visible" />
@@ -939,7 +946,7 @@
                       </Grid.RowDefinitions>
                       <Border Padding="9,0" Background="#125B8CFF" CornerRadius="4,4,0,0">
                         <DockPanel>
-                          <TextBlock DockPanel.Dock="Right" Text="可编辑" FontSize="10" Opacity="0.55" VerticalAlignment="Center" />
+                          <TextBlock DockPanel.Dock="Right" Text="{Binding SelectedConflict.OriginalDocument.ReadOnlyReason}" FontSize="10" Opacity="0.55" VerticalAlignment="Center" />
                           <TextBlock Text="合并结果" FontWeight="SemiBold" VerticalAlignment="Center" />
                         </DockPanel>
                       </Border>
@@ -953,7 +960,7 @@
                         <Button Grid.Column="1" Content="采用对方" Padding="5,3" MinHeight="28" IsEnabled="{Binding CanEditSelectedConflict}" Click="UseTheirs_OnClick" />
                         <Button Grid.Column="2" Content="合并两者" Padding="5,3" MinHeight="28" IsEnabled="{Binding CanEditSelectedConflict}" Click="UseBoth_OnClick" />
                       </Grid>
-                      <TextBox Grid.Row="2" AcceptsReturn="True" AcceptsTab="True" FontFamily="Consolas" FontSize="11" BorderThickness="0" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" ToolTip="确认内容正确后，在下方标记为已解决" Text="{Binding ConflictResultText, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="{Binding SelectedConflict.IsBinary}" />
+                      <TextBox Grid.Row="2" AcceptsReturn="True" AcceptsTab="True" FontFamily="Consolas" FontSize="11" BorderThickness="0" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" ToolTip="确认内容正确后，在下方标记为已解决" Text="{Binding ConflictResultText, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="{Binding SelectedConflict.IsReadOnly}" />
                     </Grid>
                   </Border>
                   <Border Grid.Row="1" Grid.RowSpan="4" Panel.ZIndex="10" Padding="24" Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}" BorderBrush="{StaticResource WarningBrush}" BorderThickness="1" CornerRadius="6">

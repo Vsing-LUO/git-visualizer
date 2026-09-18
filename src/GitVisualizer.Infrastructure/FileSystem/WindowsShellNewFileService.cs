@@ -30,7 +30,10 @@ public sealed class WindowsShellNewFileService : ISystemNewFileService
             return discovered.Select(item => item.Type).ToArray();
         }, cancellationToken);
 
-    public async Task CreateAsync(
+    public Task CreateAsync(string repositoryRoot, string path, string typeId, CancellationToken cancellationToken = default) =>
+        Git.RepositoryWriteLock.RunAsync(repositoryRoot, () => CreateCoreAsync(repositoryRoot, path, typeId, cancellationToken), cancellationToken);
+
+    private async Task CreateCoreAsync(
         string repositoryRoot,
         string path,
         string typeId,

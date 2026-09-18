@@ -16,6 +16,7 @@ using CommunityToolkit.Mvvm.ComponentModel.__Internals;
 using CommunityToolkit.Mvvm.Input;
 using GitVisualizer.App.Services;
 using GitVisualizer.Core;
+using GitVisualizer.Infrastructure.Diagnostics;
 
 namespace GitVisualizer.App.ViewModels;
 
@@ -34,13 +35,21 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	private const int ConflictTabIndex = 3;
 
-	internal const int HistoryPageSize = 200;
+	internal const int HistoryPageSize = HistoryState.PageSize;
 
 	private static readonly HashSet<string> ExternalDocumentExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 	{
 		".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".pdf", ".rtf", ".odt", ".ods",
 		".odp", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg"
 	};
+
+	private readonly EditorState editorState = new();
+
+	private readonly HistoryState historyState = new();
+
+	private readonly FileTreeState fileTreeState = new();
+
+	private readonly ConflictState conflictState = new();
 
 	private readonly IGitRepositoryService git;
 
@@ -68,153 +77,66 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	private IRepositoryWatcher? watcher;
 
+	private readonly IRepositorySession requests = new RepositoryRequests();
+	private bool requestsDisposed;
+
 	private CancellationTokenSource refreshCancellation = new CancellationTokenSource();
 
-	private CancellationTokenSource draftSaveCancellation = new CancellationTokenSource();
-
-	private readonly SemaphoreSlim editorSaveGate = new SemaphoreSlim(1, 1);
-
-	private readonly SemaphoreSlim documentTransitionGate = new SemaphoreSlim(1, 1);
 
 	private readonly SemaphoreSlim refreshGate = new SemaphoreSlim(1, 1);
 
 	private AppSettings settings = AppSettings.Default;
 
-	private int historyLoaded;
 
 	private int repositorySortVersion;
 
 	private int nextRepositoryOrder;
 
-	private int fileTreeLoadVersion;
-
-	private bool currentDocumentIsHistorical;
-
-	private string? currentHistoricalCommitId;
-
-	private string? currentHistoricalRelativePath;
 
 	private readonly Dictionary<string, int> repositoryInsertionOrder = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-
 	private string activeRepositoryPath = string.Empty;
-
 	private string? selectedRepository;
-
 	private string repositorySortMode = "修改时间";
-
 	private string currentBranch = "未打开仓库";
-
 	private HeadInfo? head;
-
 	private BranchInfo? selectedBranch;
-
 	private RemoteInfo? selectedRemote;
 
-	private string selectedHistoryBranchName = string.Empty;
-
-	private string historyContextText = "全部分支";
-
-	private bool hasLoadedHistory;
-
-	private bool hasMoreHistory;
-
-	private bool isCommitGraphCollapsed;
 
 	private string statusText = "拖入文件夹，或点击“打开仓库”开始";
-
 	private string commitMessage = string.Empty;
-
 	private string diffText = string.Empty;
-
 	private string diffContextText = "工作区差异";
-
 	private string diffSummaryText = "请选择一个有变化的文件。";
-
 	private string diffRawText = string.Empty;
-
 	private string rawDiffToggleText = "查看原始差异";
-
 	private DiffFilePresentation? selectedDiffFile;
-
 	private bool showRawDiff;
-
 	private bool canShowRawDiff;
-
 	private bool showWorkingDiffCards;
-
 	private bool showCommitDiffCards;
-
 	private bool showDiffEmptyState = true;
 
-	private string editorText = string.Empty;
 
 	private string detailsText = string.Empty;
-
 	private string equivalentCommand = string.Empty;
-
 	private int selectedRightTabIndex;
-
 	private bool isBusy;
-
 	private bool isCloning;
-
 	private string cloneDestinationPath = string.Empty;
-
 	private bool isPulling;
-
 	private string pullSourceText = "正在连接上游远程仓库";
-
 	private bool hasRepository;
 
-	private bool isExternalOnlyDocument;
-
-	private bool canSaveCurrentDocument;
-
-	private bool hasUnsavedEditorChanges;
-
-	private bool canOpenCurrentDocumentExternally;
-
-	private bool isBrowsingHistoricalCommit;
-
-	private bool canModifyFileTree;
-
-	private string fileTreeContextText = "工作区";
-
-	private string externalDocumentHint = "DOCX、PDF、图片等文件不能在内置文本编辑器中直接编辑。请使用 Windows 默认程序打开。";
-
-	private TextDocument? currentDocument;
 
 	private FileChange? selectedChange;
 
-	private CommitNode? selectedCommit;
 
 	private OperationLogEntry? selectedOperationLog;
 
-	private ConflictFile? selectedConflict;
-
-	private RepositoryOperationState operationState;
-
-	private bool hasConflicts;
-
-	private bool hasSelectedConflict;
-
-	private bool canEditSelectedConflict;
 
 	private bool hasDiffHunks;
 
-	private bool canContinueOperation;
-
-	private bool canAbortOperation;
-
-	private string conflictStatusText = "当前没有进行中的冲突操作。";
-
-	private string conflictBaseText = string.Empty;
-
-	private string conflictOursText = string.Empty;
-
-	private string conflictTheirsText = string.Empty;
-
-	private string conflictResultText = string.Empty;
 
 	[GeneratedCode("CommunityToolkit.Mvvm.SourceGenerators.RelayCommandGenerator", "8.4.0.0")]
 	private AsyncRelayCommand? refreshCommand;
@@ -264,7 +186,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public ObservableCollection<TagInfo> Tags { get; } = new ObservableCollection<TagInfo>();
 
-	public ObservableCollection<GitHistoryEvent> HistoryEvents { get; } = new ObservableCollection<GitHistoryEvent>();
+	public ObservableCollection<GitHistoryEvent> HistoryEvents => historyState.HistoryEvents;
 
 	public ObservableCollection<RemoteInfo> Remotes { get; } = new ObservableCollection<RemoteInfo>();
 
@@ -272,13 +194,13 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public ObservableCollection<FileChange> StagedChanges { get; } = new ObservableCollection<FileChange>();
 
-	public ObservableCollection<CommitNode> History { get; } = new ObservableCollection<CommitNode>();
+	public ObservableCollection<CommitNode> History => historyState.History;
 
-	public ObservableCollection<FileTreeItem> FileTree { get; } = new ObservableCollection<FileTreeItem>();
+	public ObservableCollection<FileTreeItem> FileTree => fileTreeState.FileTree;
 
 	public ObservableCollection<OperationLogEntry> OperationLog { get; } = new ObservableCollection<OperationLogEntry>();
 
-	public ObservableCollection<ConflictFile> Conflicts { get; } = new ObservableCollection<ConflictFile>();
+	public ObservableCollection<ConflictFile> Conflicts => conflictState.Conflicts;
 
 	public ObservableCollection<DiffHunk> DiffHunks { get; } = new ObservableCollection<DiffHunk>();
 
@@ -456,15 +378,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return selectedHistoryBranchName;
+			return historyState.SelectedHistoryBranchName;
 		}
-		[MemberNotNull("selectedHistoryBranchName")]
 		set
 		{
-			if (!EqualityComparer<string>.Default.Equals(selectedHistoryBranchName, value))
+			if (!EqualityComparer<string>.Default.Equals(historyState.SelectedHistoryBranchName, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.SelectedHistoryBranchName);
-				selectedHistoryBranchName = value;
+				historyState.SelectedHistoryBranchName = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.SelectedHistoryBranchName);
 			}
 		}
@@ -476,15 +397,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return historyContextText;
+			return historyState.HistoryContextText;
 		}
-		[MemberNotNull("historyContextText")]
 		set
 		{
-			if (!EqualityComparer<string>.Default.Equals(historyContextText, value))
+			if (!EqualityComparer<string>.Default.Equals(historyState.HistoryContextText, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.HistoryContextText);
-				historyContextText = value;
+				historyState.HistoryContextText = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.HistoryContextText);
 			}
 		}
@@ -496,15 +416,15 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return hasLoadedHistory;
+			return historyState.HasLoadedHistory;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(hasLoadedHistory, value))
+			if (!EqualityComparer<bool>.Default.Equals(historyState.HasLoadedHistory, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.HasLoadedHistory);
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.IsHistoryComplete);
-				hasLoadedHistory = value;
+				historyState.HasLoadedHistory = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.HasLoadedHistory);
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.IsHistoryComplete);
 			}
@@ -517,15 +437,15 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return hasMoreHistory;
+			return historyState.HasMoreHistory;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(hasMoreHistory, value))
+			if (!EqualityComparer<bool>.Default.Equals(historyState.HasMoreHistory, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.HasMoreHistory);
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.IsHistoryComplete);
-				hasMoreHistory = value;
+				historyState.HasMoreHistory = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.HasMoreHistory);
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.IsHistoryComplete);
 			}
@@ -538,14 +458,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return isCommitGraphCollapsed;
+			return historyState.IsCommitGraphCollapsed;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(isCommitGraphCollapsed, value))
+			if (!EqualityComparer<bool>.Default.Equals(historyState.IsCommitGraphCollapsed, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.IsCommitGraphCollapsed);
-				isCommitGraphCollapsed = value;
+				historyState.IsCommitGraphCollapsed = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.IsCommitGraphCollapsed);
 			}
 		}
@@ -811,15 +731,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return editorText;
+			return editorState.EditorText;
 		}
-		[MemberNotNull("editorText")]
 		set
 		{
-			if (!EqualityComparer<string>.Default.Equals(editorText, value))
+			if (!EqualityComparer<string>.Default.Equals(editorState.EditorText, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.EditorText);
-				editorText = value;
+				editorState.EditorText = value;
 				OnEditorTextChanged(value);
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.EditorText);
 			}
@@ -1007,14 +926,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return isExternalOnlyDocument;
+			return editorState.IsExternalOnlyDocument;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(isExternalOnlyDocument, value))
+			if (!EqualityComparer<bool>.Default.Equals(editorState.IsExternalOnlyDocument, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.IsExternalOnlyDocument);
-				isExternalOnlyDocument = value;
+				editorState.IsExternalOnlyDocument = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.IsExternalOnlyDocument);
 			}
 		}
@@ -1026,14 +945,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return canSaveCurrentDocument;
+			return editorState.CanSaveCurrentDocument;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(canSaveCurrentDocument, value))
+			if (!EqualityComparer<bool>.Default.Equals(editorState.CanSaveCurrentDocument, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.CanSaveCurrentDocument);
-				canSaveCurrentDocument = value;
+				editorState.CanSaveCurrentDocument = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.CanSaveCurrentDocument);
 			}
 		}
@@ -1045,14 +964,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return hasUnsavedEditorChanges;
+			return editorState.HasUnsavedEditorChanges;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(hasUnsavedEditorChanges, value))
+			if (!EqualityComparer<bool>.Default.Equals(editorState.HasUnsavedEditorChanges, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.HasUnsavedEditorChanges);
-				hasUnsavedEditorChanges = value;
+				editorState.HasUnsavedEditorChanges = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.HasUnsavedEditorChanges);
 			}
 		}
@@ -1064,14 +983,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return canOpenCurrentDocumentExternally;
+			return editorState.CanOpenCurrentDocumentExternally;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(canOpenCurrentDocumentExternally, value))
+			if (!EqualityComparer<bool>.Default.Equals(editorState.CanOpenCurrentDocumentExternally, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.CanOpenCurrentDocumentExternally);
-				canOpenCurrentDocumentExternally = value;
+				editorState.CanOpenCurrentDocumentExternally = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.CanOpenCurrentDocumentExternally);
 			}
 		}
@@ -1083,14 +1002,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return isBrowsingHistoricalCommit;
+			return fileTreeState.IsBrowsingHistoricalCommit;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(isBrowsingHistoricalCommit, value))
+			if (!EqualityComparer<bool>.Default.Equals(fileTreeState.IsBrowsingHistoricalCommit, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.IsBrowsingHistoricalCommit);
-				isBrowsingHistoricalCommit = value;
+				fileTreeState.IsBrowsingHistoricalCommit = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.IsBrowsingHistoricalCommit);
 			}
 		}
@@ -1102,14 +1021,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return canModifyFileTree;
+			return fileTreeState.CanModifyFileTree;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(canModifyFileTree, value))
+			if (!EqualityComparer<bool>.Default.Equals(fileTreeState.CanModifyFileTree, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.CanModifyFileTree);
-				canModifyFileTree = value;
+				fileTreeState.CanModifyFileTree = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.CanModifyFileTree);
 			}
 		}
@@ -1121,15 +1040,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return fileTreeContextText;
+			return fileTreeState.FileTreeContextText;
 		}
-		[MemberNotNull("fileTreeContextText")]
 		set
 		{
-			if (!EqualityComparer<string>.Default.Equals(fileTreeContextText, value))
+			if (!EqualityComparer<string>.Default.Equals(fileTreeState.FileTreeContextText, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.FileTreeContextText);
-				fileTreeContextText = value;
+				fileTreeState.FileTreeContextText = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.FileTreeContextText);
 			}
 		}
@@ -1141,15 +1059,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return externalDocumentHint;
+			return editorState.ExternalDocumentHint;
 		}
-		[MemberNotNull("externalDocumentHint")]
 		set
 		{
-			if (!EqualityComparer<string>.Default.Equals(externalDocumentHint, value))
+			if (!EqualityComparer<string>.Default.Equals(editorState.ExternalDocumentHint, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.ExternalDocumentHint);
-				externalDocumentHint = value;
+				editorState.ExternalDocumentHint = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.ExternalDocumentHint);
 			}
 		}
@@ -1161,14 +1078,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return currentDocument;
+			return editorState.CurrentDocument;
 		}
 		set
 		{
-			if (!EqualityComparer<TextDocument>.Default.Equals(currentDocument, value))
+			if (!EqualityComparer<TextDocument>.Default.Equals(editorState.CurrentDocument, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.CurrentDocument);
-				currentDocument = value;
+				editorState.CurrentDocument = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.CurrentDocument);
 			}
 		}
@@ -1199,14 +1116,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return selectedCommit;
+			return historyState.SelectedCommit;
 		}
 		set
 		{
-			if (!EqualityComparer<CommitNode>.Default.Equals(selectedCommit, value))
+			if (!EqualityComparer<CommitNode>.Default.Equals(historyState.SelectedCommit, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.SelectedCommit);
-				selectedCommit = value;
+				historyState.SelectedCommit = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.SelectedCommit);
 			}
 		}
@@ -1238,14 +1155,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return selectedConflict;
+			return conflictState.SelectedConflict;
 		}
 		set
 		{
-			if (!EqualityComparer<ConflictFile>.Default.Equals(selectedConflict, value))
+			if (!EqualityComparer<ConflictFile>.Default.Equals(conflictState.SelectedConflict, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.SelectedConflict);
-				selectedConflict = value;
+				conflictState.SelectedConflict = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.SelectedConflict);
 			}
 		}
@@ -1257,14 +1174,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return operationState;
+			return conflictState.OperationState;
 		}
 		set
 		{
-			if (!EqualityComparer<RepositoryOperationState>.Default.Equals(operationState, value))
+			if (!EqualityComparer<RepositoryOperationState>.Default.Equals(conflictState.OperationState, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.OperationState);
-				operationState = value;
+				conflictState.OperationState = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.OperationState);
 			}
 		}
@@ -1276,14 +1193,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return hasConflicts;
+			return conflictState.HasConflicts;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(hasConflicts, value))
+			if (!EqualityComparer<bool>.Default.Equals(conflictState.HasConflicts, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.HasConflicts);
-				hasConflicts = value;
+				conflictState.HasConflicts = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.HasConflicts);
 			}
 		}
@@ -1295,14 +1212,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return hasSelectedConflict;
+			return conflictState.HasSelectedConflict;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(hasSelectedConflict, value))
+			if (!EqualityComparer<bool>.Default.Equals(conflictState.HasSelectedConflict, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.HasSelectedConflict);
-				hasSelectedConflict = value;
+				conflictState.HasSelectedConflict = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.HasSelectedConflict);
 			}
 		}
@@ -1314,14 +1231,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return canEditSelectedConflict;
+			return conflictState.CanEditSelectedConflict;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(canEditSelectedConflict, value))
+			if (!EqualityComparer<bool>.Default.Equals(conflictState.CanEditSelectedConflict, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.CanEditSelectedConflict);
-				canEditSelectedConflict = value;
+				conflictState.CanEditSelectedConflict = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.CanEditSelectedConflict);
 			}
 		}
@@ -1352,14 +1269,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return canContinueOperation;
+			return conflictState.CanContinueOperation;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(canContinueOperation, value))
+			if (!EqualityComparer<bool>.Default.Equals(conflictState.CanContinueOperation, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.CanContinueOperation);
-				canContinueOperation = value;
+				conflictState.CanContinueOperation = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.CanContinueOperation);
 			}
 		}
@@ -1371,14 +1288,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return canAbortOperation;
+			return conflictState.CanAbortOperation;
 		}
 		set
 		{
-			if (!EqualityComparer<bool>.Default.Equals(canAbortOperation, value))
+			if (!EqualityComparer<bool>.Default.Equals(conflictState.CanAbortOperation, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.CanAbortOperation);
-				canAbortOperation = value;
+				conflictState.CanAbortOperation = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.CanAbortOperation);
 			}
 		}
@@ -1390,15 +1307,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return conflictStatusText;
+			return conflictState.ConflictStatusText;
 		}
-		[MemberNotNull("conflictStatusText")]
 		set
 		{
-			if (!EqualityComparer<string>.Default.Equals(conflictStatusText, value))
+			if (!EqualityComparer<string>.Default.Equals(conflictState.ConflictStatusText, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.ConflictStatusText);
-				conflictStatusText = value;
+				conflictState.ConflictStatusText = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.ConflictStatusText);
 			}
 		}
@@ -1410,15 +1326,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return conflictBaseText;
+			return conflictState.ConflictBaseText;
 		}
-		[MemberNotNull("conflictBaseText")]
 		set
 		{
-			if (!EqualityComparer<string>.Default.Equals(conflictBaseText, value))
+			if (!EqualityComparer<string>.Default.Equals(conflictState.ConflictBaseText, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.ConflictBaseText);
-				conflictBaseText = value;
+				conflictState.ConflictBaseText = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.ConflictBaseText);
 			}
 		}
@@ -1430,15 +1345,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return conflictOursText;
+			return conflictState.ConflictOursText;
 		}
-		[MemberNotNull("conflictOursText")]
 		set
 		{
-			if (!EqualityComparer<string>.Default.Equals(conflictOursText, value))
+			if (!EqualityComparer<string>.Default.Equals(conflictState.ConflictOursText, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.ConflictOursText);
-				conflictOursText = value;
+				conflictState.ConflictOursText = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.ConflictOursText);
 			}
 		}
@@ -1450,15 +1364,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return conflictTheirsText;
+			return conflictState.ConflictTheirsText;
 		}
-		[MemberNotNull("conflictTheirsText")]
 		set
 		{
-			if (!EqualityComparer<string>.Default.Equals(conflictTheirsText, value))
+			if (!EqualityComparer<string>.Default.Equals(conflictState.ConflictTheirsText, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.ConflictTheirsText);
-				conflictTheirsText = value;
+				conflictState.ConflictTheirsText = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.ConflictTheirsText);
 			}
 		}
@@ -1470,15 +1383,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		get
 		{
-			return conflictResultText;
+			return conflictState.ConflictResultText;
 		}
-		[MemberNotNull("conflictResultText")]
 		set
 		{
-			if (!EqualityComparer<string>.Default.Equals(conflictResultText, value))
+			if (!EqualityComparer<string>.Default.Equals(conflictState.ConflictResultText, value))
 			{
 				OnPropertyChanging(__KnownINotifyPropertyChangingArgs.ConflictResultText);
-				conflictResultText = value;
+				conflictState.ConflictResultText = value;
 				OnPropertyChanged(__KnownINotifyPropertyChangedArgs.ConflictResultText);
 			}
 		}
@@ -1498,11 +1410,11 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	[GeneratedCode("CommunityToolkit.Mvvm.SourceGenerators.RelayCommandGenerator", "8.4.0.0")]
 	[ExcludeFromCodeCoverage]
-	public IAsyncRelayCommand<FileChange?> StageCommand => stageCommand ?? (stageCommand = new AsyncRelayCommand<FileChange>(StageAsync));
+	public IAsyncRelayCommand<FileChange?> StageCommand => stageCommand ?? (stageCommand = new AsyncRelayCommand<FileChange?>(StageAsync));
 
 	[GeneratedCode("CommunityToolkit.Mvvm.SourceGenerators.RelayCommandGenerator", "8.4.0.0")]
 	[ExcludeFromCodeCoverage]
-	public IAsyncRelayCommand<FileChange?> UnstageCommand => unstageCommand ?? (unstageCommand = new AsyncRelayCommand<FileChange>(UnstageAsync));
+	public IAsyncRelayCommand<FileChange?> UnstageCommand => unstageCommand ?? (unstageCommand = new AsyncRelayCommand<FileChange?>(UnstageAsync));
 
 	[GeneratedCode("CommunityToolkit.Mvvm.SourceGenerators.RelayCommandGenerator", "8.4.0.0")]
 	[ExcludeFromCodeCoverage]
@@ -1572,11 +1484,11 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		bool flag = last != null && Directory.Exists(last);
 		if (flag)
 		{
-			flag = await git.IsRepositoryAsync(last);
+			flag = await git.IsRepositoryAsync(last!);
 		}
 		if (flag)
 		{
-			await OpenRepositoryAsync(last);
+			await OpenRepositoryAsync(last!);
 		}
 	}
 
@@ -1587,6 +1499,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task SortRepositoriesAsync(string mode)
 	{
+		using var sortContext = requests.Capture();
 		if (!RepositorySortModes.Contains<string>(mode, StringComparer.Ordinal))
 		{
 			return;
@@ -1595,16 +1508,16 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		int version = ++repositorySortVersion;
 		string[] paths = RecentRepositories.ToArray();
 		Dictionary<string, RepositoryMetadata> metadata = await Task.Run(() => paths.ToDictionary<string, string, RepositoryMetadata>((string path) => path, (string path) => ReadRepositoryMetadata(path, mode == "文件大小"), StringComparer.OrdinalIgnoreCase));
-		if (version != repositorySortVersion)
+		if (!sortContext.IsCurrent || version != repositorySortVersion)
 		{
 			return;
 		}
 		string[] array = (mode switch
 		{
-			"创建时间" => paths.OrderByDescending((string path) => metadata[path].CreationTimeUtc),
-			"修改时间" => paths.OrderByDescending((string path) => metadata[path].LastWriteTimeUtc),
-			"文件大小" => paths.OrderByDescending((string path) => metadata[path].Size),
-			_ => paths.OrderBy((string path) => repositoryInsertionOrder.GetValueOrDefault(path, int.MaxValue)),
+			"创建时间" => paths.OrderByDescending((string path) => metadata[path].CreationTimeUtc), 
+			"修改时间" => paths.OrderByDescending((string path) => metadata[path].LastWriteTimeUtc), 
+			"文件大小" => paths.OrderByDescending((string path) => metadata[path].Size), 
+			_ => paths.OrderBy((string path) => repositoryInsertionOrder.GetValueOrDefault(path, int.MaxValue)), 
 		}).ThenBy((string path) => repositoryInsertionOrder.GetValueOrDefault(path, int.MaxValue)).ToArray();
 		for (int num = 0; num < array.Length; num++)
 		{
@@ -1620,31 +1533,37 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<bool> OpenRepositoryAsync(string path)
 	{
-		bool opened = false;
+		if (requestsDisposed) return false;
 		string normalizedPath = Path.GetFullPath(path);
-		if (HasRepository && normalizedPath.Equals(ActiveRepositoryPath, StringComparison.OrdinalIgnoreCase))
+		using var opening = requests.Begin("open");
+		try
 		{
-			await RefreshAsync();
-			await RememberRepositoryAsync(ActiveRepositoryPath);
-			return true;
-		}
-		if (!await PrepareForDocumentTransitionAsync("切换仓库"))
-		{
-			return false;
-		}
-		await RunBusyAsync(async delegate(CancellationToken token)
-		{
-			RepositorySnapshot snapshot = await git.GetSnapshotAsync(normalizedPath, token);
+			if (HasRepository && normalizedPath.Equals(ActiveRepositoryPath, StringComparison.OrdinalIgnoreCase))
+			{
+				await opening.Await(RefreshAsync());
+				return true;
+			}
+			if (!await opening.Await(PrepareForDocumentTransitionAsync("切换仓库"))) return false;
 			ResetRepositoryView(normalizedPath);
-			ActiveRepositoryPath = snapshot.RepositoryPath;
-			HasRepository = true;
-			await RememberRepositoryAsync(snapshot.RepositoryPath);
-			AttachWatcher(snapshot.RepositoryPath);
-			await ApplySnapshotAsync(snapshot, token);
-			await recoveryService.PruneRepositoryReferencesAsync(snapshot.RepositoryPath, token);
-			opened = true;
-		});
-		return opened;
+			using var session = requests.Capture();
+			using var request = requests.Begin("snapshot");
+			IsBusy = true;
+			try
+			{
+				var snapshot = await request.Await(git.GetSnapshotAsync(normalizedPath, request.Token));
+				HasRepository = true;
+				await ApplySnapshotAsync(snapshot, request);
+				request.Check();
+				await request.Await(RememberRepositoryAsync(normalizedPath));
+				AttachWatcher(normalizedPath);
+				await request.Await(recoveryService.PruneRepositoryReferencesAsync(normalizedPath, request.Token));
+				return true;
+			}
+			catch (OperationCanceledException) { return false; }
+			catch (Exception error) { if (session.IsCurrent) StatusText = "打开仓库失败：" + error.Message; return false; }
+			finally { if (session.IsCurrent) IsBusy = false; }
+		}
+		catch (OperationCanceledException) { return false; }
 	}
 
 	public async Task<bool> RemoveRecentRepositoryAsync(string path)
@@ -1723,14 +1642,20 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<GitOperationResult> ConfigureGlobalIdentityAsync(GitIdentity identity)
 	{
-		GitOperationResult result = await git.SetGlobalIdentityAsync(identity);
+		using var operationContext = requests.Capture();
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("ConfigureGlobalIdentityAsync", string.Empty);
+		GitOperationResult result = await git.SetGlobalIdentityAsync(identity, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		return result;
 	}
 
 	public async Task<GitOperationResult> InitializeRepositoryAsync(string path, GitIdentity? identity)
 	{
-		GitOperationResult result = await git.InitializeAsync(path, identity);
+		using var operationContext = requests.Capture();
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("InitializeRepositoryAsync", string.Empty);
+		GitOperationResult result = await git.InitializeAsync(path, identity, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		if (result.Success)
 		{
@@ -1741,6 +1666,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<GitOperationResult> CloneRepositoryAsync(string url, string path, RemoteCredential? credential)
 	{
+		using var operationContext = requests.Capture();
 		string normalizedPath = Path.GetFullPath(path);
 		GitOperationResult result = null;
 		CloneDestinationPath = normalizedPath;
@@ -1752,6 +1678,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 				result = await git.CloneAsync(url, normalizedPath, credential, token);
 				ShowResult(result);
 			});
+			if (!operationContext.IsCurrent) return result ?? GitOperationResult.Canceled("clone", "git clone");
 			if (result?.Success ?? false)
 			{
 				await OpenRepositoryAsync(normalizedPath);
@@ -1760,114 +1687,149 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		}
 		finally
 		{
-			IsCloning = false;
+			if (operationContext.IsCurrent) IsCloning = false;
 		}
 	}
 
-	public async Task RefreshAsync()
-	{
-		if (!HasRepository)
-		{
-			return;
-		}
-		CancellationTokenSource cancellation = new CancellationTokenSource();
-		CancellationToken token = cancellation.Token;
-		CancellationTokenSource previousCancellation = refreshCancellation;
-		refreshCancellation = cancellation;
-		previousCancellation.Cancel();
-		previousCancellation.Dispose();
-		try
-		{
-			await refreshGate.WaitAsync(token);
-			try
-			{
-				await ApplySnapshotAsync(await git.GetSnapshotAsync(ActiveRepositoryPath, token), token);
-				await SynchronizeCurrentDocumentWithDiskAsync();
-			}
-			finally
-			{
-				refreshGate.Release();
-			}
-		}
-		catch (OperationCanceledException)
-		{
-		}
-		catch (Exception ex2)
-		{
-			StatusText = "刷新失败：" + ex2.Message;
-		}
-	}
+    private Task? refreshTask;
+    private RepositoryChangeKind pendingChanges;
+    private RepositorySnapshot? lastSnapshot;
+    public Task RefreshAsync() => QueueRefreshAsync(RepositoryChangeKind.All);
 
+    private Task QueueRefreshAsync(RepositoryChangeKind changes)
+    {
+        if (!HasRepository || requestsDisposed) return Task.CompletedTask;
+        pendingChanges |= changes;
+        if (refreshTask is { IsCompleted: false })
+        {
+            requests.Invalidate("snapshot");
+            return refreshTask;
+        }
+        return refreshTask = DrainRefreshAsync();
+    }
+
+    private async Task DrainRefreshAsync()
+    {
+        await Task.Yield();
+        using var session = requests.Capture();
+        while (session.IsCurrent && pendingChanges != RepositoryChangeKind.None)
+        {
+            var changes = pendingChanges;
+            pendingChanges = RepositoryChangeKind.None;
+            using var request = requests.Begin("snapshot");
+            var observedWatcher = watcher as GitVisualizer.Infrastructure.FileSystem.RepositoryWatcher;
+            var observedVersion = observedWatcher?.Version;
+            request.AdditionalValidity = () => observedWatcher?.Version == observedVersion;
+            try
+            {
+                var snapshot = await request.Await(git is IIncrementalRepositoryService incremental
+                    ? incremental.GetSnapshotAsync(request.RepositoryPath, lastSnapshot, changes, request.Token)
+                    : git.GetSnapshotAsync(request.RepositoryPath, request.Token));
+                await ApplySnapshotAsync(snapshot, request, changes);
+                request.Check();
+                lastSnapshot = snapshot;
+                await SynchronizeCurrentDocumentWithDiskAsync();
+            }
+            catch (OperationCanceledException)
+            {
+                // A superseding event must retain every invalidated category.
+                if (session.IsCurrent) pendingChanges |= observedWatcher?.Version != observedVersion ? RepositoryChangeKind.All : changes;
+            }
+            catch (Exception error) { if (request.IsCurrent) StatusText = "刷新失败：" + error.Message; }
+        }
+    }
 	private async Task CommitAsync()
 	{
+		using var writeContext = requests.Capture();
+		try
+		{
 		if (HasRepository)
 		{
-			GitOperationResult result = await git.CommitAsync(ActiveRepositoryPath, CommitMessage);
+			GitOperationResult result = await writeContext.Await(git.CommitAsync(writeContext.RepositoryPath, CommitMessage, cancellationToken: writeContext.Token));
 			ShowResult(result);
 			if (result.Success)
 			{
-				await CompleteSuccessfulCommitAsync(result);
+				await CompleteSuccessfulCommitAsync(result, writeContext);
 			}
 		}
+		}
+		catch (OperationCanceledException) { }
 	}
-
 	private async Task AmendAsync()
 	{
+		using var writeContext = requests.Capture();
+		try
+		{
 		if (HasRepository)
 		{
-			GitOperationResult result = await git.CommitAsync(ActiveRepositoryPath, CommitMessage, null, amend: true);
+			GitOperationResult result = await writeContext.Await(git.CommitAsync(writeContext.RepositoryPath, CommitMessage, null, amend: true, cancellationToken: writeContext.Token));
 			ShowResult(result);
 			if (result.Success)
 			{
-				await CompleteSuccessfulCommitAsync(result);
+				await CompleteSuccessfulCommitAsync(result, writeContext);
 			}
 		}
+		}
+		catch (OperationCanceledException) { }
 	}
 
-	private async Task CompleteSuccessfulCommitAsync(GitOperationResult result)
+	private async Task CompleteSuccessfulCommitAsync(GitOperationResult result, RequestContext writeContext)
 	{
-		await ReloadAllAsync();
-		await ShowWorkingTreeAsync();
+		writeContext.Check();
+		// These helpers handle cancellation themselves, so recheck the original
+		// write session after each await before changing any more UI state.
+		await writeContext.Await(ReloadAllAsync(writeContext));
+		await writeContext.Await(ShowWorkingTreeCoreAsync(writeContext));
 		SelectedCommit = null;
 		SelectedRightTabIndex = 1;
 		CommitMessage = string.Empty;
 		StatusText = result.Summary;
 	}
-
 	private async Task StageAsync(FileChange? change)
 	{
+		using var writeContext = requests.Capture();
+		try
+		{
 		if ((object)change != null)
 		{
 			bool flag = IsCurrentDocument(change.Path);
 			if (flag)
 			{
-				flag = !(await SaveCurrentDocumentAsync(refreshAfterSave: false));
+				flag = !(await writeContext.Await(SaveCurrentDocumentAsync(refreshAfterSave: false)));
 			}
 			if (!flag)
 			{
-				ShowResult(await git.StageFilesAsync(ActiveRepositoryPath, new global::_003C_003Ez__ReadOnlySingleElementList<string>(change.Path)));
-				await RefreshAsync();
+				ShowResult(await writeContext.Await(git.StageFilesAsync(writeContext.RepositoryPath, new global::_003C_003Ez__ReadOnlySingleElementList<string>(change.Path), cancellationToken: writeContext.Token)));
+				await writeContext.Await(RefreshAsync());
 			}
 		}
+		}
+		catch (OperationCanceledException) { }
 	}
-
 	private async Task UnstageAsync(FileChange? change)
 	{
+		using var writeContext = requests.Capture();
+		try
+		{
 		if ((object)change != null)
 		{
-			ShowResult(await git.UnstageFilesAsync(ActiveRepositoryPath, new global::_003C_003Ez__ReadOnlySingleElementList<string>(change.Path)));
-			await RefreshAsync();
+			ShowResult(await writeContext.Await(git.UnstageFilesAsync(writeContext.RepositoryPath, new global::_003C_003Ez__ReadOnlySingleElementList<string>(change.Path), cancellationToken: writeContext.Token)));
+			await writeContext.Await(RefreshAsync());
 		}
+		}
+		catch (OperationCanceledException) { }
 	}
-
 	private async Task StageAllAsync()
 	{
-		if (await SaveCurrentDocumentAsync(refreshAfterSave: false))
+		using var writeContext = requests.Capture();
+		try
+		{
+		if (await writeContext.Await(SaveCurrentDocumentAsync(refreshAfterSave: false)))
 		{
 			RepositorySnapshot repositorySnapshot;
 			try
 			{
-				repositorySnapshot = await git.GetSnapshotAsync(ActiveRepositoryPath);
+				repositorySnapshot = await writeContext.Await(git.GetSnapshotAsync(writeContext.RepositoryPath, cancellationToken: writeContext.Token));
 			}
 			catch (Exception ex)
 			{
@@ -1880,52 +1842,62 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			if (array.Length == 0)
 			{
 				StatusText = "没有可暂存的修改。";
-				await RefreshAsync();
+				await writeContext.Await(RefreshAsync());
 			}
 			else
 			{
-				ShowResult(await git.StageFilesAsync(ActiveRepositoryPath, array));
-				await RefreshAsync();
+				ShowResult(await writeContext.Await(git.StageFilesAsync(writeContext.RepositoryPath, array, cancellationToken: writeContext.Token)));
+				await writeContext.Await(RefreshAsync());
 			}
 		}
+		}
+		catch (OperationCanceledException) { }
 	}
-
 	private async Task UnstageAllAsync()
 	{
+		using var writeContext = requests.Capture();
+		try
+		{
 		if (StagedChanges.Count != 0)
 		{
-			ShowResult(await git.UnstageFilesAsync(ActiveRepositoryPath, StagedChanges.Select((FileChange change) => change.Path).ToArray()));
-			await RefreshAsync();
+			ShowResult(await writeContext.Await(git.UnstageFilesAsync(writeContext.RepositoryPath, StagedChanges.Select((FileChange change) => change.Path).ToArray(), cancellationToken: writeContext.Token)));
+			await writeContext.Await(RefreshAsync());
 		}
+		}
+		catch (OperationCanceledException) { }
 	}
-
 	private async Task SaveEditorAsync()
 	{
 		await SaveCurrentDocumentAsync(refreshAfterSave: true);
 	}
-
 	private async Task SaveAndStageEditorAsync()
 	{
+		using var writeContext = requests.Capture();
+		try
+		{
 		if ((object)CurrentDocument == null || !CanSaveCurrentDocument)
 		{
 			return;
 		}
 		string documentPath = CurrentDocument.Path;
-		if (await SaveCurrentDocumentAsync(refreshAfterSave: false))
+		if (await writeContext.Await(SaveCurrentDocumentAsync(refreshAfterSave: false)))
 		{
-			string relativePath = Path.GetRelativePath(ActiveRepositoryPath, documentPath);
+			string relativePath = Path.GetRelativePath(writeContext.RepositoryPath, documentPath);
 			if (Path.IsPathRooted(relativePath) || relativePath.Equals("..", StringComparison.Ordinal) || relativePath.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
 			{
 				StatusText = "当前文件不在已打开的仓库中，不能暂存。";
 				return;
 			}
-			ShowResult(await git.StageFilesAsync(ActiveRepositoryPath, new global::_003C_003Ez__ReadOnlySingleElementList<string>(relativePath)));
-			await RefreshAsync();
+			ShowResult(await writeContext.Await(git.StageFilesAsync(writeContext.RepositoryPath, new global::_003C_003Ez__ReadOnlySingleElementList<string>(relativePath), cancellationToken: writeContext.Token)));
+			await writeContext.Await(RefreshAsync());
 		}
+		}
+		catch (OperationCanceledException) { }
 	}
 
 	public async Task<GitOperationResult?> StageSelectedFilesAsync(IReadOnlyList<FileChange> changes)
 	{
+		using var operationContext = requests.Capture();
 		string[] paths = (from change in changes
 			where !change.IsStaged && change.State != GitChangeState.Ignored
 			select change.Path).Distinct<string>(StringComparer.OrdinalIgnoreCase).ToArray();
@@ -1943,14 +1915,18 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		{
 			return null;
 		}
-		GitOperationResult result = await git.StageFilesAsync(ActiveRepositoryPath, paths);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("StageSelectedFilesAsync", string.Empty);
+		GitOperationResult result = await git.StageFilesAsync(operationContext.RepositoryPath, paths, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await RefreshAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult?> UnstageSelectedFilesAsync(IReadOnlyList<FileChange> changes)
 	{
+		using var operationContext = requests.Capture();
 		string[] array = (from change in changes
 			where change.IsStaged
 			select change.Path).Distinct<string>(StringComparer.OrdinalIgnoreCase).ToArray();
@@ -1959,19 +1935,24 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			StatusText = "请先选择至少一个已暂存文件。";
 			return null;
 		}
-		GitOperationResult result = await git.UnstageFilesAsync(ActiveRepositoryPath, array);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("UnstageSelectedFilesAsync", string.Empty);
+		GitOperationResult result = await git.UnstageFilesAsync(operationContext.RepositoryPath, array, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await RefreshAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	private async Task<bool> SaveCurrentDocumentAsync(bool refreshAfterSave)
 	{
+		using var saveContext = requests.Capture();
 		if ((object)CurrentDocument == null || !CanSaveCurrentDocument || !HasUnsavedEditorChanges)
 		{
 			return true;
 		}
-		await editorSaveGate.WaitAsync();
+		await editorState.EditorSaveGate.WaitAsync();
+		if (!saveContext.IsCurrent) { editorState.EditorSaveGate.Release(); return false; }
 		try
 		{
 			TextDocument document = CurrentDocument;
@@ -1983,11 +1964,12 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			string text = EditorText;
 			try
 			{
-				await files.SaveTextAsync(ActiveRepositoryPath, document, text, allowExternalOverwrite: false);
+				await files.SaveTextAsync(saveContext.RepositoryPath, document, text, allowExternalOverwrite: false, cancellationToken: saveContext.Token);
 			}
 			catch (ExternalFileChangedException)
 			{
 				EditorSafetyAction action = await editorInteraction.ResolveExternalChangeAsync(document);
+				if (!saveContext.IsCurrent) return false;
 				if (action == EditorSafetyAction.Cancel)
 				{
 					StatusText = "保存已取消，编辑器中的未保存内容仍然保留。";
@@ -2000,9 +1982,13 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 					StatusText = "已重新载入 " + Path.GetFileName(document.Path);
 					return true;
 				}
-				await files.SaveTextAsync(ActiveRepositoryPath, document, text, allowExternalOverwrite: true);
+				StatusText = "检测到外部修改，保存已中止；编辑器草稿仍然保留。请先重新载入并核对文件。";
+				ScheduleDraftSave();
+				return false;
 			}
+			if (!saveContext.IsCurrent) return true;
 			TextDocument textDocument = await files.OpenTextAsync(document.Path);
+			if (!saveContext.IsCurrent) return true;
 			if ((object)CurrentDocument != null && CurrentDocument.Path.Equals(document.Path, StringComparison.OrdinalIgnoreCase))
 			{
 				CurrentDocument = textDocument;
@@ -2016,7 +2002,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 				EditorText = textDocument.Text;
 				HasUnsavedEditorChanges = false;
 			}
-			await draftStore.DeleteAsync(ActiveRepositoryPath, document.Path);
+			await draftStore.DeleteAsync(saveContext.RepositoryPath, document.Path);
 			StatusText = "已保存 " + Path.GetFileName(document.Path);
 			if (refreshAfterSave)
 			{
@@ -2024,23 +2010,24 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			}
 			return true;
 		}
+		catch (OperationCanceledException) { return false; }
 		catch (Exception ex)
 		{
+			if (!saveContext.IsCurrent) return false;
 			StatusText = "保存失败：" + ex.Message;
 			ScheduleDraftSave();
 			return false;
 		}
 		finally
 		{
-			editorSaveGate.Release();
+			editorState.EditorSaveGate.Release();
 		}
 	}
-
 	private async Task OpenCurrentDocumentExternallyAsync()
 	{
-		if (currentDocumentIsHistorical && currentHistoricalCommitId != null && currentHistoricalRelativePath != null)
+		if (editorState.CurrentDocumentIsHistorical && editorState.CurrentHistoricalCommitId != null && editorState.CurrentHistoricalRelativePath != null)
 		{
-			await OpenHistoricalFileExternallyAsync(currentHistoricalCommitId, currentHistoricalRelativePath);
+			await OpenHistoricalFileExternallyAsync(editorState.CurrentHistoricalCommitId, editorState.CurrentHistoricalRelativePath);
 			return;
 		}
 		if ((object)CurrentDocument != null && CanOpenCurrentDocumentExternally)
@@ -2077,19 +2064,23 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			return false;
 		}
 	}
-
 	private async Task FetchAsync()
 	{
+		using var writeContext = requests.Capture();
+		try
+		{
 		RemoteInfo remote = SelectedRemote;
 		if ((object)remote == null)
 		{
 			StatusText = "仓库尚未配置远程地址。";
 			return;
 		}
-		RemoteCredential credential = await GetRemoteCredentialAsync(remote);
-		GitOperationResult result = await git.FetchAsync(ActiveRepositoryPath, remote.Name, credential);
-		await ReloadAllAsync();
+		RemoteCredential credential = await writeContext.Await(GetRemoteCredentialAsync(remote));
+		GitOperationResult result = await writeContext.Await(git.FetchAsync(writeContext.RepositoryPath, remote.Name, credential, cancellationToken: writeContext.Token));
+		await writeContext.Await(ReloadAllAsync());
 		ShowResult(result);
+		}
+		catch (OperationCanceledException) { }
 	}
 
 	public Task<GitOperationResult> PullAsync(PullStrategy strategy)
@@ -2101,6 +2092,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<GitOperationResult> PullAsync(RemoteInfo? remote, string remoteBranchName, PullStrategy strategy)
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync("拉取远程更改"))
 		{
 			return CanceledOperation("pull");
@@ -2126,14 +2118,15 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			try
 			{
 				RemoteCredential credential = await GetRemoteCredentialAsync(remote);
-				result = await git.PullAsync(ActiveRepositoryPath, remote.Name, remoteBranchName, strategy, credential);
+				if (!operationContext.IsCurrent) return GitOperationResult.Canceled("PullAsync", string.Empty);
+				result = await git.PullAsync(operationContext.RepositoryPath, remote.Name, remoteBranchName, strategy, credential, cancellationToken: operationContext.Token);
 			}
 			catch (Exception exception)
 			{
 				result = GitOperationResult.Fail("pull", PullCommand(strategy), exception);
 			}
 			Dictionary<string, PullStrategy> dictionary = settings.PullStrategies.ToDictionary<KeyValuePair<string, PullStrategy>, string, PullStrategy>((KeyValuePair<string, PullStrategy> pair) => pair.Key, (KeyValuePair<string, PullStrategy> pair) => pair.Value);
-			dictionary[ActiveRepositoryPath] = strategy;
+			dictionary[operationContext.RepositoryPath] = strategy;
 			settings = settings with
 			{
 				PullStrategies = dictionary
@@ -2142,6 +2135,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			try
 			{
 				await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 			}
 			catch (Exception ex)
 			{
@@ -2150,7 +2144,8 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 					Warnings = result.Warnings.Append("拉取后刷新界面失败：" + ex.Message).ToArray()
 				};
 			}
-			ShowResult(result);
+			if (!operationContext.IsCurrent) return result;
+		ShowResult(result);
 			result2 = result;
 		}
 		finally
@@ -2160,8 +2155,8 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			{
 				await Task.Delay(timeSpan);
 			}
-			IsPulling = false;
-			IsBusy = false;
+			if (operationContext.IsCurrent) IsPulling = false;
+			if (operationContext.IsCurrent) IsBusy = false;
 		}
 		return result2;
 	}
@@ -2170,12 +2165,11 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		return strategy switch
 		{
-			PullStrategy.Rebase => "git pull --rebase",
-			PullStrategy.FastForwardOnly => "git pull --ff-only",
-			_ => "git pull --no-rebase",
+			PullStrategy.Rebase => "git pull --rebase", 
+			PullStrategy.FastForwardOnly => "git pull --ff-only", 
+			_ => "git pull --no-rebase", 
 		};
 	}
-
 	private async Task PushAsync()
 	{
 		await PushToRemoteAsync(SelectedRemote);
@@ -2183,6 +2177,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<GitOperationResult> PushToRemoteAsync(RemoteInfo? remote, IProgress<GitPushProgress>? progress = null, bool forceWithLease = false)
 	{
+		using var operationContext = requests.Capture();
 		if ((object)remote == null)
 		{
 			StatusText = "仓库尚未配置远程地址。";
@@ -2201,7 +2196,8 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			try
 			{
 				RemoteCredential credential = await GetRemoteCredentialAsync(remote);
-				result = await git.PushAsync(ActiveRepositoryPath, remote.Name, forceWithLease, credential, progress);
+				if (!operationContext.IsCurrent) return GitOperationResult.Canceled("PushToRemoteAsync", string.Empty);
+				result = await git.PushAsync(operationContext.RepositoryPath, remote.Name, forceWithLease, credential, progress, cancellationToken: operationContext.Token);
 			}
 			catch (Exception exception)
 			{
@@ -2210,6 +2206,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			try
 			{
 				await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 			}
 			catch (Exception ex)
 			{
@@ -2218,43 +2215,47 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 					Warnings = result.Warnings.Append("推送后刷新界面失败：" + ex.Message).ToArray()
 				};
 			}
-			ShowResult(result);
+			if (!operationContext.IsCurrent) return result;
+		ShowResult(result);
 			return result;
 		}
 		finally
 		{
-			IsBusy = false;
+			if (operationContext.IsCurrent) IsBusy = false;
 		}
 	}
-
 	private async Task LoadMoreHistoryAsync()
 	{
+		using var request = requests.Begin("history");
+		try
+		{
+		using var measurement = PerformanceRecorder.Begin(PerformanceOperation.HistoryPage);
 		if (!HasRepository || (HasLoadedHistory && !HasMoreHistory))
 		{
 			return;
 		}
-		IReadOnlyList<CommitNode> readOnlyList = ((!string.IsNullOrEmpty(SelectedHistoryBranchName)) ? (await git.GetBranchHistoryAsync(ActiveRepositoryPath, SelectedHistoryBranchName, historyLoaded, 201)) : (await git.GetHistoryAsync(ActiveRepositoryPath, historyLoaded, 201)));
+		IReadOnlyList<CommitNode> readOnlyList = ((!string.IsNullOrEmpty(SelectedHistoryBranchName)) ? (await request.Await(git.GetBranchHistoryAsync(request.RepositoryPath, SelectedHistoryBranchName, historyState.HistoryLoaded, 201, cancellationToken: request.Token))) : (await request.Await(git.GetHistoryAsync(request.RepositoryPath, historyState.HistoryLoaded, 201, cancellationToken: request.Token))));
 		(int, bool) tuple = CalculateHistoryPageState(readOnlyList.Count);
-		foreach (CommitNode item in readOnlyList.Take(tuple.Item1))
-		{
-			History.Add(item);
-		}
-		historyLoaded += tuple.Item1;
+		historyState.AppendPage(readOnlyList);
 		HasMoreHistory = tuple.Item2;
 		HasLoadedHistory = true;
-		StatusText = ((tuple.Item1 == 0) ? "已经显示全部提交。" : (string.IsNullOrEmpty(SelectedHistoryBranchName) ? $"已加载 {historyLoaded} 个提交 · 全部分支" : $"已加载 {historyLoaded} 个提交 · {SelectedHistoryBranchName} 分支"));
+		StatusText = ((tuple.Item1 == 0) ? "已经显示全部提交。" : (string.IsNullOrEmpty(SelectedHistoryBranchName) ? $"已加载 {historyState.HistoryLoaded} 个提交 · 全部分支" : $"已加载 {historyState.HistoryLoaded} 个提交 · {SelectedHistoryBranchName} 分支"));
+		}
+		catch (OperationCanceledException) { return; }
 	}
 
 	internal static (int VisibleCount, bool HasMore) CalculateHistoryPageState(int fetchedCount)
 	{
-		int num = Math.Max(0, fetchedCount);
-		return (VisibleCount: Math.Min(num, 200), HasMore: num > 200);
+		return HistoryState.Page(fetchedCount);
 	}
 
 	public async Task<bool> SelectChangeAsync(FileChange? change)
 	{
+		using var request = requests.Begin("navigation");
+		try
+		{
 		if (change != null && !IsCurrentDocumentPath(change.Path) &&
-			!await PrepareForDocumentTransitionAsync("切换文件"))
+			!await request.Await(PrepareForDocumentTransitionAsync("切换文件")))
 		{
 			return false;
 		}
@@ -2268,28 +2269,35 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		SelectedRightTabIndex = 0;
 		try
 		{
-			LoadDiffPresentation(await diff.GetWorkingDiffPresentationAsync(ActiveRepositoryPath, change.Path, change.IsStaged), isCommitComparison: false);
-			string path = Path.Combine(ActiveRepositoryPath, change.Path);
+			LoadDiffPresentation(await request.Await(diff.GetWorkingDiffPresentationAsync(request.RepositoryPath, change.Path, change.IsStaged, cancellationToken: request.Token)), isCommitComparison: false);
+			string path = Path.Combine(request.RepositoryPath, change.Path);
 			if (File.Exists(path))
 			{
-				await OpenFileAsync(path);
+				await request.Await(OpenFileAsync(path, request));
 			}
 		}
+		catch (OperationCanceledException) { return false; }
 		catch (Exception ex)
 		{
+			if (!request.IsCurrent) return false;
 			DiffText = "无法显示差异：" + ex.Message;
 			DiffSummaryText = DiffText;
 			ShowDiffEmptyState = true;
 		}
 		return true;
+		}
+		catch (OperationCanceledException) { return false; }
 	}
 
 	public async Task<bool> SelectFileAsync(FileTreeItem? item)
 	{
+		using var request = requests.Begin("navigation");
+		try
+		{
 		if (item != null && !item.IsDirectory)
 		{
 			if ((item.CommitId != null || !IsCurrentDocumentFullPath(item.FullPath)) &&
-				!await PrepareForDocumentTransitionAsync("切换文件"))
+				!await request.Await(PrepareForDocumentTransitionAsync("切换文件")))
 			{
 				return false;
 			}
@@ -2297,23 +2305,31 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			string commitId = item.CommitId;
 			if (commitId != null)
 			{
-				return await OpenCommitFileAsync(commitId, item.RelativePath);
+				return await request.Await(OpenCommitFileAsync(commitId, item.RelativePath, request));
 			}
-			return await OpenFileAsync(item.FullPath);
+			return await request.Await(OpenFileAsync(item.FullPath, request));
 		}
 		return true;
+		}
+		catch (OperationCanceledException) { return false; }
 	}
 
-	public async Task<bool> SelectCommitAsync(CommitNode? commit)
+	public Task<bool> SelectCommitAsync(CommitNode? commit) => SelectCommitCoreAsync(commit);
+
+	private async Task<bool> SelectCommitCoreAsync(CommitNode? commit, RequestContext? parent = null)
 	{
-		if (!await PrepareForDocumentTransitionAsync("浏览提交历史"))
+		using var ownedRequest = parent is null ? requests.Begin("navigation") : null;
+		var request = parent ?? ownedRequest!;
+		try
+		{
+		if (!await request.Await(PrepareForDocumentTransitionAsync("浏览提交历史")))
 		{
 			return false;
 		}
 		SelectedCommit = commit;
 		if ((object)commit == null)
 		{
-			await ShowWorkingTreeAsync();
+			await request.Await(ShowWorkingTreeCoreAsync(request));
 			return true;
 		}
 		SelectedRightTabIndex = 2;
@@ -2341,33 +2357,48 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			list2.Add("这是普通提交节点；连线仅表示 parent 关系，不表示提交归属于某个分支。");
 		}
 		DetailsText = $"{commit.ShortId}\n{commit.Message}\n\n作者：{commit.AuthorName} <{commit.AuthorEmail}>\n时间：{commit.AuthoredAt.LocalDateTime:G}\n父提交：{string.Join(", ", commit.ParentIds.Select((string id) => id.Substring(0, Math.Min(8, id.Length))))}\n引用：{string.Join(", ", list)}\n\n关系说明：\n" + string.Join("\n", list2.Select((string explanation) => "• " + explanation));
-		int loadVersion = ++fileTreeLoadVersion;
+		int loadVersion = fileTreeState.BeginLoad();
 		IsBrowsingHistoricalCommit = true;
 		CanModifyFileTree = false;
 		FileTreeContextText = "版本 " + commit.ShortId;
 		try
 		{
-			IReadOnlyList<CommitTreeEntry> readOnlyList = await git.GetCommitTreeAsync(ActiveRepositoryPath, commit.Id);
-			if (loadVersion == fileTreeLoadVersion && string.Equals(SelectedCommit?.Id, commit.Id, StringComparison.Ordinal))
+			IReadOnlyList<CommitTreeEntry> readOnlyList = await request.Await(git is ICommitDirectoryService directoryService
+                ? directoryService.GetCommitDirectoryAsync(request.RepositoryPath, commit.Id, "", request.Token)
+                : git.GetCommitTreeAsync(request.RepositoryPath, commit.Id, cancellationToken: request.Token));
+			if (fileTreeState.IsCurrent(loadVersion) && string.Equals(SelectedCommit?.Id, commit.Id, StringComparison.Ordinal))
 			{
-				BuildCommitFileTree(commit.Id, readOnlyList);
+				if (git is ICommitDirectoryService directories)
+                {
+                    var nodes = await request.Await(CreateHistoricalNodesAsync(directories, request.RepositoryPath,
+                        commit.Id, readOnlyList, request.Token));
+                    await request.Await(FileTreeItem.ApplyEntriesAsync(FileTree, nodes, request.Token));
+                }
+                else BuildCommitFileTree(commit.Id, readOnlyList);
 				StatusText = $"正在查看版本 {commit.ShortId} 的 {readOnlyList.Count((CommitTreeEntry entry) => !entry.IsDirectory)} 个文件";
 			}
 		}
+		catch (OperationCanceledException) { return false; }
 		catch (Exception ex)
 		{
-			if (loadVersion == fileTreeLoadVersion)
+			if (!request.IsCurrent) return false;
+			if (fileTreeState.IsCurrent(loadVersion))
 			{
 				FileTree.Clear();
 				StatusText = "无法读取版本 " + commit.ShortId + " 的文件：" + ex.Message;
 			}
 		}
 		return true;
+		}
+		catch (OperationCanceledException) { return false; }
 	}
 
 	public async Task<bool> SelectBranchAsync(BranchInfo? branch)
 	{
-		if (branch != null && !await PrepareForDocumentTransitionAsync("浏览其他分支"))
+		using var request = requests.Begin("navigation");
+		try
+		{
+		if (branch != null && !await request.Await(PrepareForDocumentTransitionAsync("浏览其他分支")))
 		{
 			return false;
 		}
@@ -2378,24 +2409,31 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			HistoryContextText = branch.FriendlyName + " 分支版本关系";
 			History.Clear();
 			ResetHistoryPagination();
-			await LoadMoreHistoryAsync();
+			await request.Await(LoadMoreHistoryAsync());
 			CommitNode tip = History.FirstOrDefault((CommitNode commit) => string.Equals(commit.Id, branch.TipId, StringComparison.Ordinal));
 			if ((object)tip == null)
 			{
 				StatusText = "无法在已加载历史中找到分支 " + branch.FriendlyName + " 的最新版本";
 				return true;
 			}
-			await SelectCommitAsync(tip);
+			await request.Await(SelectCommitCoreAsync(tip, request));
 			FileTreeContextText = "分支 " + branch.FriendlyName + " · " + tip.ShortId;
 			StatusText = "正在查看 " + branch.FriendlyName + " 分支的版本关系和最新文件";
 		}
 		return true;
+		}
+		catch (OperationCanceledException) { return false; }
 	}
+	private Task ShowWorkingTreeAsync() => ShowWorkingTreeCoreAsync();
 
-	private async Task ShowWorkingTreeAsync()
+	private async Task ShowWorkingTreeCoreAsync(RequestContext? parent = null)
 	{
+		using var ownedRequest = parent is null ? requests.Begin("navigation") : null;
+		var request = parent ?? ownedRequest!;
+		try
+		{
 		bool flag = !string.IsNullOrEmpty(SelectedHistoryBranchName);
-		fileTreeLoadVersion++;
+		fileTreeState.Invalidate();
 		SelectedCommit = null;
 		SelectedBranch = null;
 		SelectedHistoryBranchName = string.Empty;
@@ -2404,7 +2442,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		IsBrowsingHistoricalCommit = false;
 		CanModifyFileTree = true;
 		FileTreeContextText = "工作区";
-		if (currentDocumentIsHistorical)
+		if (editorState.CurrentDocumentIsHistorical)
 		{
 			CurrentDocument = null;
 			EditorText = string.Empty;
@@ -2412,27 +2450,44 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			IsExternalOnlyDocument = false;
 			CanSaveCurrentDocument = false;
 			CanOpenCurrentDocumentExternally = false;
-			currentDocumentIsHistorical = false;
+			editorState.CurrentDocumentIsHistorical = false;
 		}
 		if (HasRepository)
 		{
-			BuildFileTree(ActiveRepositoryPath);
+			await request.Await(BuildFileTreeAsync(request.RepositoryPath, request.Token));
 			StatusText = "正在显示当前工作区文件";
 			if (flag)
 			{
 				History.Clear();
 				ResetHistoryPagination();
-				await LoadMoreHistoryAsync();
+				await request.Await(LoadMoreHistoryAsync());
 				StatusText = "正在显示当前工作区文件 · 全部分支关系";
 			}
 		}
+		}
+		catch (OperationCanceledException) { return; }
 	}
 
-	public void SelectConflict(ConflictFile? conflict)
-	{
+    public void SelectConflict(ConflictFile? conflict) => _ = SelectConflictAsync(conflict);
+
+    private async Task SelectConflictAsync(ConflictFile? conflict, RequestContext? parent = null)
+    {
+        parent?.Check();
+        using var request = requests.Begin("conflict-details");
+        if (conflict is { IsLoaded: false } && git is IConflictDetailsService details)
+        {
+            SelectedConflict = conflict;
+            HasSelectedConflict = true;
+            CanEditSelectedConflict = false;
+            ConflictBaseText = ConflictOursText = ConflictTheirsText = ConflictResultText = string.Empty;
+            try { conflict = await request.Await(details.GetConflictAsync(request.RepositoryPath, conflict.Path, request.Token)); }
+            catch (OperationCanceledException) { return; }
+            catch (Exception error) { if (request.IsCurrent) StatusText = "无法读取冲突：" + error.Message; return; }
+        }
+        parent?.Check();
 		SelectedConflict = conflict;
 		HasSelectedConflict = (object)conflict != null;
-		CanEditSelectedConflict = (object)conflict != null && !conflict.IsBinary;
+		CanEditSelectedConflict = (object)conflict != null && !conflict.IsReadOnly;
 		if ((object)conflict != null)
 		{
 			SelectedRightTabIndex = 3;
@@ -2446,32 +2501,28 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	public void UseConflictSide(ConflictSide side)
 	{
 		ConflictFile? conflictFile = SelectedConflict;
-		if ((object)conflictFile != null && conflictFile.IsBinary)
+		if ((object)conflictFile != null && conflictFile.IsReadOnly)
 		{
-			StatusText = "二进制冲突已锁定文本编辑；请使用外部工具处理后再暂存。";
+			StatusText = "此冲突无法安全文本编辑；请使用外部工具处理后再暂存。";
 			return;
 		}
-		ConflictResultText = side switch
-		{
-			ConflictSide.Ours => ConflictOursText,
-			ConflictSide.Theirs => ConflictTheirsText,
-			ConflictSide.Both => ConflictOursText.TrimEnd() + Environment.NewLine + ConflictTheirsText.TrimStart(),
-			_ => ConflictResultText,
-		};
+		ConflictResultText = conflictState.SideText(side);
 	}
 
 	public async Task<GitOperationResult> ResolveSelectedConflictAsync()
 	{
+		using var operationContext = requests.Capture();
 		ConflictFile conflict = SelectedConflict;
 		if ((object)conflict == null)
 		{
 			throw new InvalidOperationException("请先选择冲突文件。");
 		}
-		if (conflict.IsBinary)
+		if (conflict.IsReadOnly)
 		{
-			InvalidOperationException exception = new InvalidOperationException("二进制冲突不能通过文本编辑器解决；本版本已阻止可能破坏文件的写入。");
+			InvalidOperationException exception = new InvalidOperationException("此冲突为只读；请使用外部工具处理。");
 			GitOperationResult result = GitOperationResult.Fail("conflict-resolve", "git add -- <path>", exception);
-			ShowResult(result);
+			if (!operationContext.IsCurrent) return result;
+		ShowResult(result);
 			return result;
 		}
 		if (IsCurrentDocumentPath(conflict.Path) &&
@@ -2479,29 +2530,40 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		{
 			return CanceledOperation("conflict-resolve");
 		}
-		GitOperationResult result2 = await git.ResolveConflictAsync(ActiveRepositoryPath, conflict.Path, ConflictResultText);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("ResolveSelectedConflictAsync", string.Empty);
+		GitOperationResult result2 = await git.ResolveConflictAsync(operationContext.RepositoryPath, conflict.Path, ConflictResultText, originalDocument: conflict.OriginalDocument, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result2;
 		ShowResult(result2);
-		await RefreshAsync();
+		if (result2.Success) await RefreshAsync();
+		if (!operationContext.IsCurrent) return result2;
 		return result2;
 	}
 
 	public async Task<GitOperationResult> CreateBranchAsync(string name)
 	{
-		GitOperationResult result = await git.CreateBranchAsync(ActiveRepositoryPath, name, SelectedCommit?.Id);
+		using var operationContext = requests.Capture();
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("CreateBranchAsync", string.Empty);
+		GitOperationResult result = await git.CreateBranchAsync(operationContext.RepositoryPath, name, SelectedCommit?.Id, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> CheckoutBranchAsync(BranchInfo branch)
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync("切换分支"))
 		{
 			return CanceledOperation("checkout");
 		}
-		GitOperationResult result = await git.CheckoutBranchAsync(ActiveRepositoryPath, branch.FriendlyName);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("CheckoutBranchAsync", string.Empty);
+		GitOperationResult result = await git.CheckoutBranchAsync(operationContext.RepositoryPath, branch.FriendlyName, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
@@ -2512,26 +2574,35 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<GitOperationResult> DeleteBranchAsync(BranchInfo branch, bool force)
 	{
-		GitOperationResult result = await git.DeleteBranchAsync(ActiveRepositoryPath, branch.FriendlyName, force);
+		using var operationContext = requests.Capture();
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("DeleteBranchAsync", string.Empty);
+		GitOperationResult result = await git.DeleteBranchAsync(operationContext.RepositoryPath, branch.FriendlyName, force, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> MergeBranchAsync(BranchInfo branch)
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync("合并分支"))
 		{
 			return CanceledOperation("merge");
 		}
-		GitOperationResult result = await git.MergeAsync(ActiveRepositoryPath, branch.FriendlyName);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("MergeBranchAsync", string.Empty);
+		GitOperationResult result = await git.MergeAsync(operationContext.RepositoryPath, branch.FriendlyName, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> CherryPickSelectedAsync()
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync("拣选提交"))
 		{
 			return CanceledOperation("cherry-pick");
@@ -2540,14 +2611,18 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		{
 			throw new InvalidOperationException("请先选择一个提交。");
 		}
-		GitOperationResult result = await git.CherryPickAsync(ActiveRepositoryPath, SelectedCommit.Id);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("CherryPickSelectedAsync", string.Empty);
+		GitOperationResult result = await git.CherryPickAsync(operationContext.RepositoryPath, SelectedCommit.Id, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> RevertSelectedAsync()
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync("撤销提交"))
 		{
 			return CanceledOperation("revert");
@@ -2556,14 +2631,18 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		{
 			throw new InvalidOperationException("请先选择一个提交。");
 		}
-		GitOperationResult result = await git.RevertAsync(ActiveRepositoryPath, SelectedCommit.Id);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("RevertSelectedAsync", string.Empty);
+		GitOperationResult result = await git.RevertAsync(operationContext.RepositoryPath, SelectedCommit.Id, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> ResetSelectedAsync(GitResetMode mode)
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync("回退当前分支"))
 		{
 			return CanceledOperation("reset");
@@ -2572,39 +2651,53 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		{
 			throw new InvalidOperationException("请先选择一个提交。");
 		}
-		GitOperationResult result = await git.ResetAsync(ActiveRepositoryPath, SelectedCommit.Id, mode);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("ResetSelectedAsync", string.Empty);
+		GitOperationResult result = await git.ResetAsync(operationContext.RepositoryPath, SelectedCommit.Id, mode, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> ContinueOperationAsync()
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync("继续 Git 操作"))
 		{
 			return CanceledOperation("continue");
 		}
-		GitOperationResult result = await git.ContinueOperationAsync(ActiveRepositoryPath);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("ContinueOperationAsync", string.Empty);
+		GitOperationResult result = await git.ContinueOperationAsync(operationContext.RepositoryPath, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> AbortOperationAsync()
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync("中止 Git 操作"))
 		{
 			return CanceledOperation("abort");
 		}
-		GitOperationResult result = await git.AbortOperationAsync(ActiveRepositoryPath);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("AbortOperationAsync", string.Empty);
+		GitOperationResult result = await git.AbortOperationAsync(operationContext.RepositoryPath, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> ConfigureIdentityAsync(GitIdentity identity, bool global)
 	{
-		GitOperationResult result = await git.SetIdentityAsync(ActiveRepositoryPath, identity, global);
+		using var operationContext = requests.Capture();
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("ConfigureIdentityAsync", string.Empty);
+		GitOperationResult result = await git.SetIdentityAsync(operationContext.RepositoryPath, identity, global, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		return result;
 	}
@@ -2674,6 +2767,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<GitOperationResult?> ApplySelectedHunksAsync(IReadOnlyList<DiffHunk> hunks, bool unstage)
 	{
+		using var operationContext = requests.Capture();
 		if (indexPatch == null || (object)SelectedChange == null || hunks.Count == 0)
 		{
 			StatusText = ((hunks.Count == 0) ? "请先选择至少一个差异块。" : "差异块服务不可用。");
@@ -2690,10 +2784,12 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			return null;
 		}
 		string path = SelectedChange.Path;
-		GitOperationResult gitOperationResult = ((!unstage) ? (await indexPatch.StageHunksAsync(ActiveRepositoryPath, path, hunks)) : (await indexPatch.UnstageHunksAsync(ActiveRepositoryPath, path, hunks)));
+		GitOperationResult gitOperationResult = ((!unstage) ? (await indexPatch.StageHunksAsync(operationContext.RepositoryPath, path, hunks, cancellationToken: operationContext.Token)) : (await indexPatch.UnstageHunksAsync(operationContext.RepositoryPath, path, hunks, cancellationToken: operationContext.Token)));
 		GitOperationResult result = gitOperationResult;
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await RefreshAsync();
+		if (!operationContext.IsCurrent) return result;
 		FileChange change = (unstage ? StagedChanges : UnstagedChanges).FirstOrDefault((FileChange fileChange) => fileChange.Path.Equals(path, StringComparison.OrdinalIgnoreCase)) ?? (unstage ? UnstagedChanges : StagedChanges).FirstOrDefault((FileChange fileChange) => fileChange.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
 		await SelectChangeAsync(change);
 		return result;
@@ -2701,14 +2797,19 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<GitOperationResult> RenameBranchAsync(BranchInfo branch, string newName)
 	{
-		GitOperationResult result = await git.RenameBranchAsync(ActiveRepositoryPath, branch.FriendlyName, newName.Trim());
+		using var operationContext = requests.Capture();
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("RenameBranchAsync", string.Empty);
+		GitOperationResult result = await git.RenameBranchAsync(operationContext.RepositoryPath, branch.FriendlyName, newName.Trim(), cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> CheckoutSelectedCommitAsync()
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync("切换提交"))
 		{
 			return CanceledOperation("checkout");
@@ -2717,30 +2818,64 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		{
 			throw new InvalidOperationException("请先选择一个提交。");
 		}
-		GitOperationResult result = await git.CheckoutCommitAsync(ActiveRepositoryPath, SelectedCommit.Id);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("CheckoutSelectedCommitAsync", string.Empty);
+		GitOperationResult result = await git.CheckoutCommitAsync(operationContext.RepositoryPath, SelectedCommit.Id, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task CompareCommitsAsync(CommitNode oldCommit, CommitNode newCommit)
 	{
+		using var request = requests.Begin("navigation");
+		try
+		{
 		ClearDiffPresentation();
 		SelectedChange = null;
 		SelectedRightTabIndex = 0;
 		try
 		{
-			LoadDiffPresentation(await diff.CompareCommitsPresentationAsync(ActiveRepositoryPath, oldCommit.Id, newCommit.Id), isCommitComparison: true);
+			comparisonOldId = oldCommit.Id;
+            comparisonNewId = newCommit.Id;
+            LoadDiffPresentation(await request.Await(diff is ICommitDiffMetadataService metadata
+                ? metadata.GetCommitDiffMetadataAsync(request.RepositoryPath, oldCommit.Id, newCommit.Id, request.Token)
+                : diff.CompareCommitsPresentationAsync(request.RepositoryPath, oldCommit.Id, newCommit.Id, cancellationToken: request.Token)), isCommitComparison: true);
 			StatusText = "已比较 " + oldCommit.ShortId + " 与 " + newCommit.ShortId;
 		}
+		catch (OperationCanceledException) { return; }
 		catch (Exception ex)
 		{
+			if (!request.IsCurrent) return;
 			DiffText = "无法比较提交：" + ex.Message;
 			DiffSummaryText = DiffText;
 			ShowDiffEmptyState = true;
 			StatusText = "提交比较失败。";
 		}
+		}
+		catch (OperationCanceledException) { return; }
 	}
+
+    private string? comparisonOldId, comparisonNewId;
+    public async Task<DiffFilePresentation?> LoadComparedFileAsync(DiffFilePresentation file)
+    {
+        if (comparisonOldId is null || comparisonNewId is null || !ShowCommitDiffCards) return null;
+        using var request = requests.Begin("comparison-file:" + file.Path);
+        try
+        {
+            var result = await request.Await(diff.CompareCommitsPresentationAsync(request.RepositoryPath,
+                comparisonOldId, comparisonNewId, file.Path, request.Token));
+            if (!ShowCommitDiffCards || !DiffFiles.Contains(file)) return null;
+            SelectedDiffFile = result.Files.FirstOrDefault();
+            DiffRawText = DiffText = result.RawText;
+            CanShowRawDiff = !string.IsNullOrWhiteSpace(result.RawText);
+            DiffSummaryText = file.Path + " · " + result.Summary;
+            return SelectedDiffFile;
+        }
+        catch (OperationCanceledException) { return null; }
+        catch (Exception error) { if (request.IsCurrent) StatusText = "无法读取差异：" + error.Message; return null; }
+    }
 
 	public void ToggleRawDiff()
 	{
@@ -2758,6 +2893,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<GitOperationResult> DiscardChangesAsync(IReadOnlyList<FileChange> changes)
 	{
+		using var operationContext = requests.Capture();
 		string[] array = (from change in changes
 			where !change.IsStaged
 			select change.Path).Distinct<string>(StringComparer.OrdinalIgnoreCase).ToArray();
@@ -2765,15 +2901,18 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		{
 			throw new InvalidOperationException("请从未暂存修改列表中选择至少一个要丢弃的文件。");
 		}
-		string currentFullPath = ((!currentDocumentIsHistorical && (object)CurrentDocument != null) ? Path.GetFullPath(CurrentDocument.Path) : null);
-		bool refreshEditor = currentFullPath != null && array.Any((string path) => Path.GetFullPath(Path.Combine(ActiveRepositoryPath, path)).Equals(currentFullPath, StringComparison.OrdinalIgnoreCase));
+		string currentFullPath = ((!editorState.CurrentDocumentIsHistorical && (object)CurrentDocument != null) ? Path.GetFullPath(CurrentDocument.Path) : null);
+		bool refreshEditor = currentFullPath != null && array.Any((string path) => Path.GetFullPath(Path.Combine(operationContext.RepositoryPath, path)).Equals(currentFullPath, StringComparison.OrdinalIgnoreCase));
 		if (refreshEditor && !await PrepareForDocumentTransitionAsync("丢弃当前文件的修改"))
 		{
 			return CanceledOperation("discard");
 		}
-		GitOperationResult result = await git.DiscardFilesAsync(ActiveRepositoryPath, array);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("DiscardChangesAsync", string.Empty);
+		GitOperationResult result = await git.DiscardFilesAsync(operationContext.RepositoryPath, array, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await RefreshAsync();
+		if (!operationContext.IsCurrent) return result;
 		if (result.Success)
 		{
 			SelectedChange = null;
@@ -2796,6 +2935,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<GitOperationResult> ResolveSelectedBinaryConflictAsync(ConflictSide side)
 	{
+		using var operationContext = requests.Capture();
 		ConflictFile conflictFile = SelectedConflict;
 		if ((object)conflictFile == null || !conflictFile.IsBinary)
 		{
@@ -2806,9 +2946,12 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		{
 			return CanceledOperation("binary-conflict-resolve");
 		}
-		GitOperationResult result = await git.ResolveBinaryConflictAsync(ActiveRepositoryPath, conflictFile.Path, side);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("ResolveSelectedBinaryConflictAsync", string.Empty);
+		GitOperationResult result = await git.ResolveBinaryConflictAsync(operationContext.RepositoryPath, conflictFile.Path, side, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await RefreshAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
@@ -2819,57 +2962,83 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<GitOperationResult> RestoreRecoveryPointAsync(RecoveryPoint point)
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync("恢复工作区"))
 		{
 			return CanceledOperation("restore");
 		}
-		if (!Path.GetFullPath(point.RepositoryPath).Equals(Path.GetFullPath(ActiveRepositoryPath), StringComparison.OrdinalIgnoreCase))
+		if (!Path.GetFullPath(point.RepositoryPath).Equals(Path.GetFullPath(operationContext.RepositoryPath), StringComparison.OrdinalIgnoreCase))
 		{
 			throw new InvalidOperationException("恢复点不属于当前仓库。");
 		}
-		GitOperationResult result = await recoveryService.RestoreAsync(point);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("RestoreRecoveryPointAsync", string.Empty);
+		GitOperationResult result = await recoveryService.RestoreAsync(point, operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
+		try { await ReloadAllAsync(operationContext); }
+		catch (Exception exception)
+		{
+			result = result with { Warnings = result.Warnings.Concat(new[] { "刷新仓库视图失败：" + exception.Message }).ToArray() };
+		}
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
-		await ReloadAllAsync();
+		DetailsText = string.Join(Environment.NewLine, result.Details);
+		if (!result.Success)
+			StatusText += $"（阶段：{result.ExecutionStage}；恢复前保护点：{result.RecoveryPointId ?? "尚未创建"}）";
 		return result;
 	}
 
 	public async Task<GitOperationResult> DeleteRecoveryPointAsync(RecoveryPoint point)
 	{
+		using var operationContext = requests.Capture();
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("DeleteRecoveryPointAsync", string.Empty);
 		GitOperationResult result = await recoveryService.DeleteAsync(point);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		return result;
 	}
 
 	public async Task<GitOperationResult> ConfigureRemoteAsync(string? originalName, string name, string url)
 	{
-		GitOperationResult gitOperationResult = ((originalName != null) ? (await git.UpdateRemoteAsync(ActiveRepositoryPath, originalName, name, url)) : (await git.AddRemoteAsync(ActiveRepositoryPath, name, url)));
+		using var operationContext = requests.Capture();
+		GitOperationResult gitOperationResult = ((originalName != null) ? (await git.UpdateRemoteAsync(operationContext.RepositoryPath, originalName, name, url, cancellationToken: operationContext.Token)) : (await git.AddRemoteAsync(operationContext.RepositoryPath, name, url, cancellationToken: operationContext.Token)));
 		GitOperationResult result = gitOperationResult;
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await RefreshAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> RemoveRemoteAsync(string name)
 	{
-		GitOperationResult result = await git.RemoveRemoteAsync(ActiveRepositoryPath, name);
+		using var operationContext = requests.Capture();
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("RemoveRemoteAsync", string.Empty);
+		GitOperationResult result = await git.RemoveRemoteAsync(operationContext.RepositoryPath, name, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await RefreshAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task CreateFileAsync(string parentDirectory, string name, bool directory)
 	{
+		using var writeContext = requests.Capture();
+		try
+		{
 		ValidateLeafName(name);
 		string path = Path.Combine(parentDirectory, name);
 		if (!directory)
 		{
-			await files.CreateFileAsync(ActiveRepositoryPath, path);
+			await writeContext.Await(files.CreateFileAsync(writeContext.RepositoryPath, path, cancellationToken: writeContext.Token));
 		}
 		else
 		{
-			await files.CreateDirectoryAsync(ActiveRepositoryPath, path);
+			await writeContext.Await(files.CreateDirectoryAsync(writeContext.RepositoryPath, path, cancellationToken: writeContext.Token));
 		}
-		await RefreshAsync();
+		await writeContext.Await(RefreshAsync());
+		}
+		catch (OperationCanceledException) { }
 	}
 
 	public Task<IReadOnlyList<SystemNewFileType>> GetSystemNewFileTypesAsync()
@@ -2879,20 +3048,28 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task CreateSystemFileAsync(string parentDirectory, string name, SystemNewFileType type)
 	{
+		using var writeContext = requests.Capture();
+		try
+		{
 		ValidateLeafName(name);
-		await systemNewFiles.CreateAsync(ActiveRepositoryPath, Path.Combine(parentDirectory, name), type.Id);
-		await RefreshAsync();
+		await writeContext.Await(systemNewFiles.CreateAsync(writeContext.RepositoryPath, Path.Combine(parentDirectory, name), type.Id, cancellationToken: writeContext.Token));
+		await writeContext.Await(RefreshAsync());
+		}
+		catch (OperationCanceledException) { }
 	}
 
 	public async Task MoveFileAsync(string source, string newName)
 	{
+		using var writeContext = requests.Capture();
+		try
+		{
 		ValidateLeafName(newName);
 		bool affectsCurrent = PathContainsCurrentDocument(source);
-		if (affectsCurrent && !await PrepareForDocumentTransitionAsync("重命名当前文件"))
+		if (affectsCurrent && !await writeContext.Await(PrepareForDocumentTransitionAsync("重命名当前文件")))
 		{
 			return;
 		}
-		string destination = Path.Combine(Path.GetDirectoryName(source) ?? ActiveRepositoryPath, newName);
+		string destination = Path.Combine(Path.GetDirectoryName(source) ?? writeContext.RepositoryPath, newName);
 		string currentPath = affectsCurrent && CurrentDocument != null ? CurrentDocument.Path : null;
 		string relocatedCurrentPath = null;
 		if (currentPath != null)
@@ -2902,30 +3079,38 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 				? destination
 				: Path.Combine(destination, relative);
 		}
-		await files.MoveAsync(ActiveRepositoryPath, source, destination);
+		await writeContext.Await(files.MoveAsync(writeContext.RepositoryPath, source, destination, cancellationToken: writeContext.Token));
 		if (currentPath != null && relocatedCurrentPath != null)
 		{
-			await draftStore.MoveAsync(ActiveRepositoryPath, currentPath, relocatedCurrentPath);
-			await OpenFileAsync(relocatedCurrentPath);
+			await draftStore.MoveAsync(writeContext.RepositoryPath, currentPath, relocatedCurrentPath);
+			await writeContext.Await(OpenFileAsync(relocatedCurrentPath));
 		}
-		await RefreshAsync();
+		await writeContext.Await(RefreshAsync());
+		}
+		catch (OperationCanceledException) { }
 	}
 
 	public async Task DeleteFileAsync(string path)
 	{
+		using var writeContext = requests.Capture();
+		try
+		{
 		bool affectsCurrent = PathContainsCurrentDocument(path);
-		if (affectsCurrent && !await PrepareForDocumentTransitionAsync("删除当前文件"))
+		if (affectsCurrent && !await writeContext.Await(PrepareForDocumentTransitionAsync("删除当前文件")))
 		{
 			return;
 		}
 		string currentPath = affectsCurrent && CurrentDocument != null ? CurrentDocument.Path : null;
-		await files.DeleteAsync(ActiveRepositoryPath, path);
+		await writeContext.Await(files.DeleteAsync(writeContext.RepositoryPath, path, cancellationToken: writeContext.Token));
 		if (currentPath != null)
 		{
-			await draftStore.DeleteAsync(ActiveRepositoryPath, currentPath);
+			await draftStore.DeleteAsync(writeContext.RepositoryPath, currentPath);
+			writeContext.Check();
 			ClearCurrentDocument();
 		}
-		await RefreshAsync();
+		await writeContext.Await(RefreshAsync());
+		}
+		catch (OperationCanceledException) { }
 	}
 
 	public IReadOnlyList<string> GetRemoteBranchNames(RemoteInfo remote)
@@ -2940,17 +3125,25 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<GitOperationResult> CreateTagAsync(string name, string? targetId = null, GitTagType tagType = GitTagType.Lightweight, string? message = null)
 	{
-		GitOperationResult result = await git.CreateTagAsync(ActiveRepositoryPath, name.Trim(), (!string.IsNullOrWhiteSpace(targetId)) ? targetId : Head?.CommitId, tagType, message);
+		using var operationContext = requests.Capture();
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("CreateTagAsync", string.Empty);
+		GitOperationResult result = await git.CreateTagAsync(operationContext.RepositoryPath, name.Trim(), (!string.IsNullOrWhiteSpace(targetId)) ? targetId : Head?.CommitId, tagType, message, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> DeleteTagAsync(string name)
 	{
-		GitOperationResult result = await git.DeleteTagAsync(ActiveRepositoryPath, name);
+		using var operationContext = requests.Capture();
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("DeleteTagAsync", string.Empty);
+		GitOperationResult result = await git.DeleteTagAsync(operationContext.RepositoryPath, name, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
@@ -2961,45 +3154,61 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	public async Task<GitOperationResult> SaveStashAsync(string message)
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync("保存当前现场"))
 		{
 			return CanceledOperation("stash");
 		}
-		GitOperationResult result = await git.SaveStashAsync(ActiveRepositoryPath, message);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("SaveStashAsync", string.Empty);
+		GitOperationResult result = await git.SaveStashAsync(operationContext.RepositoryPath, message, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> ApplyStashAsync(int index, bool pop)
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync(pop ? "弹出暂存现场" : "应用暂存现场"))
 		{
 			return CanceledOperation("stash");
 		}
-		GitOperationResult result = await git.ApplyStashAsync(ActiveRepositoryPath, index, pop);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("ApplyStashAsync", string.Empty);
+		GitOperationResult result = await git.ApplyStashAsync(operationContext.RepositoryPath, index, pop, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> DeleteStashAsync(int index)
 	{
-		GitOperationResult result = await git.DeleteStashAsync(ActiveRepositoryPath, index);
+		using var operationContext = requests.Capture();
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("DeleteStashAsync", string.Empty);
+		GitOperationResult result = await git.DeleteStashAsync(operationContext.RepositoryPath, index, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
 	public async Task<GitOperationResult> RebaseOntoAsync(string upstreamBranch, string? ontoBranch = null)
 	{
+		using var operationContext = requests.Capture();
 		if (!await PrepareForDocumentTransitionAsync("变基当前分支"))
 		{
 			return CanceledOperation("rebase");
 		}
-		GitOperationResult result = await git.RebaseOntoAsync(ActiveRepositoryPath, upstreamBranch, string.IsNullOrWhiteSpace(ontoBranch) ? null : ontoBranch);
+		if (!operationContext.IsCurrent) return GitOperationResult.Canceled("RebaseOntoAsync", string.Empty);
+		GitOperationResult result = await git.RebaseOntoAsync(operationContext.RepositoryPath, upstreamBranch, string.IsNullOrWhiteSpace(ontoBranch) ? null : ontoBranch, cancellationToken: operationContext.Token);
+		if (!operationContext.IsCurrent) return result;
 		ShowResult(result);
 		await ReloadAllAsync();
+		if (!operationContext.IsCurrent) return result;
 		return result;
 	}
 
@@ -3008,15 +3217,19 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		return git.Preview(operation, affected);
 	}
 
-	private async Task<bool> OpenFileAsync(string path)
+	private async Task<bool> OpenFileAsync(string path, RequestContext? parent = null)
 	{
+		using var ownedRequest = parent is null ? requests.Begin("navigation") : null;
+		var request = parent ?? ownedRequest!;
+		try
+		{
 		path = Path.GetFullPath(path);
-		if (!currentDocumentIsHistorical && CurrentDocument != null &&
+		if (!editorState.CurrentDocumentIsHistorical && CurrentDocument != null &&
 			Path.GetFullPath(CurrentDocument.Path).Equals(path, StringComparison.OrdinalIgnoreCase))
 		{
 			return true;
 		}
-		if (!await PrepareForDocumentTransitionAsync("切换文件"))
+		if (!await request.Await(PrepareForDocumentTransitionAsync("切换文件")))
 		{
 			return false;
 		}
@@ -3036,34 +3249,41 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			}
 			else
 			{
-				document = await files.OpenTextAsync(path);
-				externalOnly = document.IsBinary || ExternalDocumentExtensions.Contains(Path.GetExtension(path));
+				document = await request.Await(files.OpenTextAsync(path, cancellationToken: request.Token));
+				externalOnly = document.Size > GitVisualizer.Infrastructure.FileSystem.TextFileStorage.EditLimit || document.IsBinary || ExternalDocumentExtensions.Contains(Path.GetExtension(path));
 			}
 
 			string editorValue = externalOnly ? string.Empty : document.Text;
 			bool restoreDraft = false;
 			if (!externalOnly && !document.IsReadOnly && HasRepository)
 			{
-				EditorDraft draft = await draftStore.LoadAsync(ActiveRepositoryPath, path);
+				EditorDraft draft = await request.Await(draftStore.LoadAsync(request.RepositoryPath, path, cancellationToken: request.Token));
 				if (draft != null)
 				{
 					if (string.Equals(draft.Text, document.Text, StringComparison.Ordinal))
 					{
-						await draftStore.DeleteAsync(ActiveRepositoryPath, path);
+						await request.Await(draftStore.DeleteAsync(request.RepositoryPath, path, cancellationToken: request.Token));
 					}
 					else
 					{
-						EditorSafetyAction action = await editorInteraction.ResolveDraftAsync(draft);
+						EditorSafetyAction action = await request.Await(editorInteraction.ResolveDraftAsync(draft, cancellationToken: request.Token));
 						if (action == EditorSafetyAction.Cancel)
 						{
 							return false;
 						}
 						if (action == EditorSafetyAction.Discard)
 						{
-							await draftStore.DeleteAsync(ActiveRepositoryPath, path);
+							await request.Await(draftStore.DeleteAsync(request.RepositoryPath, path, cancellationToken: request.Token));
 						}
 						else if (action == EditorSafetyAction.Restore)
 						{
+							var verified = await request.Await(files.OpenTextAsync(path, cancellationToken: request.Token));
+							if (verified.IsReadOnly || verified.OriginalByteDigest != document.OriginalByteDigest)
+								throw new ExternalFileChangedException(path);
+							// Old drafts have no byte metadata: a fresh strict decode is mandatory.
+							if (draft.OriginalByteDigest is not null && draft.OriginalByteDigest != verified.OriginalByteDigest)
+								document = verified with { OriginalByteDigest = draft.OriginalByteDigest };
+							else document = verified;
 							editorValue = draft.Text;
 							restoreDraft = true;
 						}
@@ -3072,79 +3292,100 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			}
 
 			CancelScheduledDraftSave();
-			currentDocumentIsHistorical = false;
-			currentHistoricalCommitId = null;
-			currentHistoricalRelativePath = null;
+			editorState.CurrentDocumentIsHistorical = false;
+			editorState.CurrentHistoricalCommitId = null;
+			editorState.CurrentHistoricalRelativePath = null;
 			CurrentDocument = document;
 			IsExternalOnlyDocument = externalOnly;
 			CanSaveCurrentDocument = !document.IsReadOnly && !externalOnly;
-			CanOpenCurrentDocumentExternally = externalOnly;
-			ExternalDocumentHint = "DOCX、PDF、图片等文件不能在内置文本编辑器中直接编辑。请使用 Windows 默认程序打开。";
+			CanOpenCurrentDocumentExternally = externalOnly || document.IsReadOnly;
+			ExternalDocumentHint = document.ReadOnlyReason ?? "DOCX、PDF、图片等文件不能在内置文本编辑器中直接编辑。请使用 Windows 默认程序打开。";
 			EditorText = editorValue;
 			HasUnsavedEditorChanges = restoreDraft;
 			return true;
 		}
+		catch (OperationCanceledException) { return false; }
 		catch (Exception ex)
 		{
+			if (!request.IsCurrent) return false;
 			StatusText = "无法打开文件：" + ex.Message;
 			return false;
 		}
+		}
+		catch (OperationCanceledException) { return false; }
 	}
 
-	private async Task<bool> OpenCommitFileAsync(string commitId, string relativePath)
+	private async Task<bool> OpenCommitFileAsync(string commitId, string relativePath, RequestContext? parent = null)
 	{
-		if (!await PrepareForDocumentTransitionAsync("浏览历史文件"))
+		using var ownedRequest = parent is null ? requests.Begin("navigation") : null;
+		var request = parent ?? ownedRequest!;
+		try
+		{
+		if (!await request.Await(PrepareForDocumentTransitionAsync("浏览历史文件")))
 		{
 			return false;
 		}
 		try
 		{
-			TextDocument document = await git.OpenCommitFileAsync(ActiveRepositoryPath, commitId, relativePath);
+			TextDocument document = await request.Await(git.OpenCommitFileAsync(request.RepositoryPath, commitId, relativePath, cancellationToken: request.Token));
 			CancelScheduledDraftSave();
-			currentDocumentIsHistorical = true;
-			currentHistoricalCommitId = commitId;
-			currentHistoricalRelativePath = relativePath;
+			editorState.CurrentDocumentIsHistorical = true;
+			editorState.CurrentHistoricalCommitId = commitId;
+			editorState.CurrentHistoricalRelativePath = relativePath;
 			CurrentDocument = document;
-			IsExternalOnlyDocument = document.IsBinary || ExternalDocumentExtensions.Contains(Path.GetExtension(relativePath));
+			IsExternalOnlyDocument = document.Size > GitVisualizer.Infrastructure.FileSystem.TextFileStorage.EditLimit || document.IsBinary || ExternalDocumentExtensions.Contains(Path.GetExtension(relativePath));
 			CanSaveCurrentDocument = false;
-			CanOpenCurrentDocumentExternally = IsExternalOnlyDocument;
+			CanOpenCurrentDocumentExternally = IsExternalOnlyDocument || document.IsReadOnly;
 			ExternalDocumentHint = "这是历史提交中的只读文件。可导出只读副本并使用 Windows 默认程序打开。";
 			EditorText = (IsExternalOnlyDocument ? string.Empty : document.Text);
 			HasUnsavedEditorChanges = false;
 			return true;
 		}
+		catch (OperationCanceledException) { return false; }
 		catch (Exception ex)
 		{
+			if (!request.IsCurrent) return false;
 			StatusText = "无法打开历史文件：" + ex.Message;
 			return false;
 		}
+		}
+		catch (OperationCanceledException) { return false; }
 	}
 
 	private async Task<bool> OpenHistoricalFileExternallyAsync(string commitId, string relativePath)
 	{
+		using var request = requests.Begin("external");
 		try
 		{
-			TextDocument textDocument = ((currentHistoricalCommitId == commitId && currentHistoricalRelativePath == relativePath && CurrentDocument?.ContentBytes != null) ? CurrentDocument : (await git.OpenCommitFileAsync(ActiveRepositoryPath, commitId, relativePath)));
-			if (textDocument.ContentBytes == null)
-			{
-				throw new InvalidOperationException("无法读取历史文件的原始内容。");
-			}
-			string text = BuildHistoricalExportPath(ActiveRepositoryPath, commitId, relativePath);
-			if (!File.Exists(text))
-			{
-				Directory.CreateDirectory(Path.GetDirectoryName(text)!);
-				await File.WriteAllBytesAsync(text, textDocument.ContentBytes);
-			}
+		try
+		{
+            string text = BuildHistoricalExportPath(request.RepositoryPath, commitId, relativePath);
+            if (!File.Exists(text))
+            {
+                if (git is IHistoricalFileExportService exporter)
+                    await request.Await(exporter.ExportCommitFileAsync(request.RepositoryPath, commitId, relativePath, text, request.Token));
+                else
+                {
+                    var document = await request.Await(git.OpenCommitFileAsync(request.RepositoryPath, commitId, relativePath, request.Token));
+                    if (document.ContentBytes is null) throw new InvalidOperationException("无法读取历史文件的原始内容。");
+                    Directory.CreateDirectory(Path.GetDirectoryName(text)!);
+                    await request.Await(File.WriteAllBytesAsync(text, document.ContentBytes, request.Token));
+                }
+            }
 			new FileInfo(text).IsReadOnly = true;
-			await files.OpenExternalAsync(text);
+			await request.Await(files.OpenExternalAsync(text, cancellationToken: request.Token));
 			StatusText = "已打开 " + Path.GetFileName(relativePath) + " 的版本 " + commitId.Substring(0, Math.Min(8, commitId.Length)) + "（只读副本）";
 			return true;
 		}
+		catch (OperationCanceledException) { return false; }
 		catch (Exception ex)
 		{
+			if (!request.IsCurrent) return false;
 			StatusText = "无法打开历史版本文件：" + ex.Message;
 			return false;
 		}
+		}
+		catch (OperationCanceledException) { return false; }
 	}
 
 	private static string BuildHistoricalExportPath(string repositoryPath, string commitId, string relativePath)
@@ -3217,7 +3458,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		CancelScheduledDraftSave();
 		CurrentDocument = null;
 		EditorText = string.Empty;
-		currentDocumentIsHistorical = false;
+		editorState.CurrentDocumentIsHistorical = false;
 		HasUnsavedEditorChanges = false;
 		IsExternalOnlyDocument = false;
 		CanSaveCurrentDocument = false;
@@ -3231,7 +3472,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		{
 			return;
 		}
-		if (currentDocumentIsHistorical)
+		if (editorState.CurrentDocumentIsHistorical)
 		{
 			if (!IsBrowsingHistoricalCommit)
 			{
@@ -3258,6 +3499,10 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		bool deleteDraft,
 		bool discardUnsaved = true)
 	{
+		using var request = requests.Capture();
+		var documentAtRequest = CurrentDocument;
+		try
+		{
 		path = Path.GetFullPath(path);
 		TextDocument original = CurrentDocument;
 		if (original == null || !Path.GetFullPath(original.Path).Equals(path, StringComparison.OrdinalIgnoreCase))
@@ -3270,14 +3515,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			{
 				if (deleteDraft)
 				{
-					await draftStore.DeleteAsync(ActiveRepositoryPath, path);
+					await request.Await(draftStore.DeleteAsync(request.RepositoryPath, path, cancellationToken: request.Token));
 				}
 				ClearCurrentDocument();
 			}
 			return;
 		}
 
-		TextDocument document = await files.OpenTextAsync(path);
+		TextDocument document = await request.Await(files.OpenTextAsync(path, cancellationToken: request.Token));
 		if (CurrentDocument == null ||
 			!Path.GetFullPath(CurrentDocument.Path).Equals(path, StringComparison.OrdinalIgnoreCase) ||
 			(!discardUnsaved && HasUnsavedEditorChanges))
@@ -3285,21 +3530,24 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			return;
 		}
 
+		if (!ReferenceEquals(CurrentDocument, documentAtRequest)) return;
 		CancelScheduledDraftSave();
-		currentDocumentIsHistorical = false;
-		currentHistoricalCommitId = null;
-		currentHistoricalRelativePath = null;
+		editorState.CurrentDocumentIsHistorical = false;
+		editorState.CurrentHistoricalCommitId = null;
+		editorState.CurrentHistoricalRelativePath = null;
 		CurrentDocument = document;
-		IsExternalOnlyDocument = document.IsBinary || ExternalDocumentExtensions.Contains(Path.GetExtension(path));
+		IsExternalOnlyDocument = document.Size > GitVisualizer.Infrastructure.FileSystem.TextFileStorage.EditLimit || document.IsBinary || ExternalDocumentExtensions.Contains(Path.GetExtension(path));
 		CanSaveCurrentDocument = !document.IsReadOnly && !IsExternalOnlyDocument;
-		CanOpenCurrentDocumentExternally = IsExternalOnlyDocument;
-		ExternalDocumentHint = "DOCX、PDF、图片等文件不能在内置文本编辑器中直接编辑。请使用 Windows 默认程序打开。";
+		CanOpenCurrentDocumentExternally = IsExternalOnlyDocument || document.IsReadOnly;
+		ExternalDocumentHint = document.ReadOnlyReason ?? "DOCX、PDF、图片等文件不能在内置文本编辑器中直接编辑。请使用 Windows 默认程序打开。";
 		EditorText = IsExternalOnlyDocument ? string.Empty : document.Text;
 		HasUnsavedEditorChanges = false;
 		if (deleteDraft)
 		{
-			await draftStore.DeleteAsync(ActiveRepositoryPath, path);
+			await request.Await(draftStore.DeleteAsync(request.RepositoryPath, path, cancellationToken: request.Token));
 		}
+		}
+		catch (OperationCanceledException) { return; }
 	}
 
 	private static bool IsSsh(string url)
@@ -3315,9 +3563,15 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		return true;
 	}
 
-	private async Task ReloadAllAsync()
+	private async Task ReloadAllAsync(RequestContext? operationContext = null)
 	{
-		fileTreeLoadVersion++;
+		if (operationContext is not null && !operationContext.IsCurrent) return;
+		using var request = requests.Begin("reload");
+		try
+		{
+		operationContext?.Check();
+		requests.Invalidate("navigation");
+		fileTreeState.Invalidate();
 		SelectedCommit = null;
 		SelectedBranch = null;
 		SelectedHistoryBranchName = string.Empty;
@@ -3326,21 +3580,36 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		IsBrowsingHistoricalCommit = false;
 		CanModifyFileTree = true;
 		FileTreeContextText = "工作区";
-		await RefreshAsync();
+		await request.Await(RefreshAsync());
+		operationContext?.Check();
 		History.Clear();
 		ResetHistoryPagination();
-		await LoadMoreHistoryAsync();
+		await request.Await(LoadMoreHistoryAsync());
+		operationContext?.Check();
+		}
+		catch (OperationCanceledException) { return; }
 	}
 
-	private async Task ApplySnapshotAsync(RepositorySnapshot snapshot, CancellationToken cancellationToken)
+	private async Task ApplySnapshotAsync(RepositorySnapshot snapshot, RequestContext request, RepositoryChangeKind changes = RepositoryChangeKind.All)
 	{
+		var reloadReferences = lastSnapshot is null || (changes & RepositoryChangeKind.References) != 0;
+        var events = reloadReferences ? await request.Await(git.GetHistoryEventsAsync(request.RepositoryPath, request.Token)) : HistoryEvents.ToArray();
+        var logs = changes == RepositoryChangeKind.All ? await request.Await(logStore.GetRecentAsync(request.RepositoryPath, 100, request.Token)) : OperationLog.ToArray();
+		var refreshedConflicts = await request.Await(git is IConflictDetailsService details
+            ? details.GetConflictMetadataAsync(request.RepositoryPath, request.Token)
+            : git.GetConflictsAsync(request.RepositoryPath, request.Token));
+		request.Check();
+
+        var selectedChangePath = SelectedChange?.Path;
+        var selectedChangeStaged = SelectedChange?.IsStaged;
+        var selectedBranchName = SelectedBranch?.CanonicalName;
 		string selectedRemoteName = SelectedRemote?.Name;
 		Head = snapshot.Head;
 		CurrentBranch = (snapshot.Head.IsDetached ? ("游离 HEAD · " + snapshot.Head.CommitId.Substring(0, Math.Min(8, snapshot.Head.CommitId.Length))) : ("HEAD → " + snapshot.Head.BranchName));
 		Replace(Branches, snapshot.Branches);
 		Replace(Tags, snapshot.Tags);
 		ObservableCollection<GitHistoryEvent> historyEvents = HistoryEvents;
-		Replace(historyEvents, await git.GetHistoryEventsAsync(snapshot.RepositoryPath, cancellationToken));
+		Replace(historyEvents, events);
 		Replace(Remotes, snapshot.Remotes);
 		BranchInfo? branchInfo = snapshot.Branches.FirstOrDefault((BranchInfo branch) => branch.IsCurrent);
 		object obj;
@@ -3357,14 +3626,19 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		SelectedRemote = Remotes.FirstOrDefault((RemoteInfo remote) => remote.Name.Equals(selectedRemoteName, StringComparison.OrdinalIgnoreCase)) ?? Remotes.FirstOrDefault((RemoteInfo remote) => remote.Name.Equals(trackedRemoteName, StringComparison.OrdinalIgnoreCase)) ?? Remotes.FirstOrDefault((RemoteInfo remote) => remote.Name.Equals("origin", StringComparison.OrdinalIgnoreCase)) ?? Remotes.FirstOrDefault();
 		Replace(UnstagedChanges, snapshot.Changes.Where((FileChange change) => !change.IsStaged));
 		Replace(StagedChanges, snapshot.Changes.Where((FileChange change) => change.IsStaged));
+        if (selectedChangePath is not null)
+            SelectedChange = UnstagedChanges.Concat(StagedChanges).FirstOrDefault(x => x.Path == selectedChangePath
+                && x.IsStaged == selectedChangeStaged) ?? UnstagedChanges.Concat(StagedChanges).FirstOrDefault(x => x.Path == selectedChangePath);
+        if (selectedBranchName is not null) SelectedBranch = Branches.FirstOrDefault(x => x.CanonicalName == selectedBranchName);
 		Replace(Notices, snapshot.Features.Notices);
 		if (!IsBrowsingHistoricalCommit)
 		{
-			BuildFileTree(snapshot.WorkingDirectory);
+			await request.Await(BuildFileTreeAsync(snapshot.WorkingDirectory, request.Token));
 		}
 		ObservableCollection<OperationLogEntry> operationLog = OperationLog;
-		Replace(operationLog, await logStore.GetRecentAsync(snapshot.RepositoryPath, 100, cancellationToken));
-		SelectedOperationLog = OperationLog.FirstOrDefault();
+		Replace(operationLog, logs);
+		SelectedOperationLog = OperationLog.FirstOrDefault(x => x.Id == SelectedOperationLog?.Id) ?? OperationLog.FirstOrDefault();
+		ConflictFile conflictBeforeRefresh = SelectedConflict;
 		string selectedConflictPath = SelectedConflict?.Path;
 		string selectedConflictResultText = ConflictResultText;
 		bool preserveEditedConflictResult = SelectedConflict != null &&
@@ -3373,44 +3647,87 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 				SelectedConflict.ResultText,
 				StringComparison.Ordinal);
 		ObservableCollection<ConflictFile> conflicts = Conflicts;
-		Replace(conflicts, await git.GetConflictsAsync(snapshot.RepositoryPath, cancellationToken));
-		ConflictFile selectedConflict = Conflicts.FirstOrDefault((ConflictFile conflict) => conflict.Path.Equals(selectedConflictPath, StringComparison.OrdinalIgnoreCase)) ?? Conflicts.FirstOrDefault();
-		SelectConflict(selectedConflict);
-		if (preserveEditedConflictResult && selectedConflict != null &&
-			selectedConflict.Path.Equals(selectedConflictPath, StringComparison.OrdinalIgnoreCase))
+		// Keep the original byte snapshot with its draft; refreshing must not authorize an overwrite.
+		Replace(conflicts, refreshedConflicts.Select(item =>
+			preserveEditedConflictResult && item.Path.Equals(selectedConflictPath, StringComparison.OrdinalIgnoreCase)
+				? conflictBeforeRefresh! : item));
+		ConflictFile? refreshedConflict = Conflicts.FirstOrDefault((ConflictFile conflict) => conflict.Path.Equals(selectedConflictPath, StringComparison.OrdinalIgnoreCase)) ?? Conflicts.FirstOrDefault();
+		await SelectConflictAsync(refreshedConflict, request);
+        request.Check();
+		if (preserveEditedConflictResult && conflictState.SelectedConflict != null &&
+			conflictState.SelectedConflict.Path.Equals(selectedConflictPath, StringComparison.OrdinalIgnoreCase))
 		{
 			ConflictResultText = selectedConflictResultText;
 		}
 		UpdateConflictState(snapshot.OperationState);
 		StatusText = $"{snapshot.Changes.Count} 个变化 · {snapshot.Branches.Count} 个分支 · 刷新于 {snapshot.RefreshedAt:HH:mm:ss}";
-		if (History.Count == 0)
-		{
-			ResetHistoryPagination();
+		if (reloadReferences && lastSnapshot is not null &&
+            (!Equals(lastSnapshot.Head, snapshot.Head) || !lastSnapshot.Branches.SequenceEqual(snapshot.Branches)
+                || !lastSnapshot.Tags.SequenceEqual(snapshot.Tags)))
+        {
+            await ReloadHistoryPreservingSelectionAsync(request);
+        }
+        else if (History.Count == 0)
+        {
+            ResetHistoryPagination();
 			await LoadMoreHistoryAsync();
 		}
 	}
 
-	private void BuildFileTree(string root)
-	{
-		FileTree.Clear();
-		try
-		{
-			foreach (string item in (from path in Directory.EnumerateFileSystemEntries(root)
-				where !Path.GetFileName(path).Equals(".git", StringComparison.OrdinalIgnoreCase) && !FileTreeItem.IsTransientOfficeLockFile(path)
-				select path).OrderByDescending(Directory.Exists).ThenBy<string, string>(Path.GetFileName, StringComparer.CurrentCultureIgnoreCase).Take(2000))
-			{
-				FileTree.Add(FileTreeItem.Create(item, 3));
-			}
-		}
-		catch (IOException)
-		{
-		}
-	}
+    private async Task ReloadHistoryPreservingSelectionAsync(RequestContext request)
+    {
+        var wanted = Math.Max(200, History.Count);
+        var selectedId = SelectedCommit?.Id;
+        ResetHistoryPagination();
+        var updated = new List<CommitNode>(wanted);
+        bool more;
+        do
+        {
+            var page = await request.Await(string.IsNullOrEmpty(SelectedHistoryBranchName)
+                ? git.GetHistoryAsync(request.RepositoryPath, updated.Count, 201, request.Token)
+                : git.GetBranchHistoryAsync(request.RepositoryPath, SelectedHistoryBranchName, updated.Count, 201, request.Token));
+            updated.AddRange(page.Take(200));
+            more = page.Count > 200;
+        } while (more && updated.Count < wanted);
+        request.Check();
+        Replace(History, updated);
+        historyState.HistoryLoaded = updated.Count;
+        HasLoadedHistory = true;
+        HasMoreHistory = more;
+        if (selectedId is not null && History.FirstOrDefault(x => x.Id == selectedId) is { } selected)
+            SelectedCommit = selected;
+    }
+
+    private async Task BuildFileTreeAsync(string root, CancellationToken token)
+    {
+        using var measurement = PerformanceRecorder.Begin(PerformanceOperation.FileTreeBuild);
+        await FileTreeItem.UpdateDirectoryAsync(FileTree, root, token);
+    }
+
+    private static Task<FileTreeItem[]> CreateHistoricalNodesAsync(ICommitDirectoryService service,
+        string root, string commitId, IReadOnlyList<CommitTreeEntry> entries, CancellationToken token) => Task.Run(() =>
+    {
+        return entries.OrderByDescending(x => x.IsDirectory).ThenBy(x => x.Path, StringComparer.CurrentCultureIgnoreCase)
+            .Select(entry =>
+            {
+                token.ThrowIfCancellationRequested();
+                var node = new FileTreeItem
+                {
+                    Name = Path.GetFileName(entry.Path), FullPath = Path.Combine(root, entry.Path),
+                    RelativePath = entry.Path, CommitId = commitId, IsDirectory = entry.IsDirectory, LifetimeToken = token,
+                    ChildLoader = async cancellation => await CreateHistoricalNodesAsync(service, root, commitId,
+                        await service.GetCommitDirectoryAsync(root, commitId, entry.Path, cancellation), cancellation)
+                };
+                if (entry.IsDirectory) node.Children.Add(new FileTreeItem { Name = "展开以加载…", FullPath = node.FullPath,
+                    IsDirectory = false, IsPlaceholder = true });
+                return node;
+            }).ToArray();
+    }, token);
 
 	private void BuildCommitFileTree(string commitId, IReadOnlyList<CommitTreeEntry> entries)
 	{
 		FileTree.Clear();
-		Dictionary<string, CommitTreeEntry[]> byParent = entries.Take(10000).GroupBy<CommitTreeEntry, string>(delegate(CommitTreeEntry entry)
+		Dictionary<string, CommitTreeEntry[]> byParent = entries.GroupBy<CommitTreeEntry, string>(delegate(CommitTreeEntry entry)
 		{
 			int num = entry.Path.LastIndexOf('/');
 			return (num >= 0) ? entry.Path.Substring(0, num) : string.Empty;
@@ -3446,18 +3763,38 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		watcher?.Dispose();
 		watcher = watcherFactory.Create(path);
-		watcher.RepositoryChanged += async delegate
-		{
-			await Application.Current.Dispatcher.InvokeAsync((Func<Task>)async delegate
-			{
-				await RefreshAsync();
-			});
-		};
+		var watcherContext = requests.Capture();
+        var eventGate = new object();
+        var dispatchQueued = false;
+        var dirty = RepositoryChangeKind.None;
+        watcher.RepositoryChanged += (_, args) =>
+        {
+            if (Application.Current?.Dispatcher is not { } dispatcher) return;
+            lock (eventGate)
+            {
+                dirty |= (args as RepositoryChangedEventArgs)?.Changes ?? RepositoryChangeKind.All;
+                if (dispatchQueued) return;
+                dispatchQueued = true;
+            }
+            dispatcher.BeginInvoke(new Action(async () =>
+            {
+                RepositoryChangeKind changes;
+                lock (eventGate) { changes = dirty; dirty = RepositoryChangeKind.None; dispatchQueued = false; }
+                if (watcherContext.IsCurrent) await QueueRefreshAsync(changes);
+            }));
+        };
 		watcher.Start();
 	}
 
+    public Task RevalidateOnFocusAsync()
+    {
+        var current = watcher;
+        return current is GitVisualizer.Infrastructure.FileSystem.RepositoryWatcher concrete ? Task.Run(concrete.Revalidate) : Task.CompletedTask;
+    }
+
 	private async Task RememberRepositoryAsync(string path)
 	{
+		using var rememberContext = requests.Capture();
 		string existing = RecentRepositories.FirstOrDefault((string item) => item.Equals(path, StringComparison.OrdinalIgnoreCase));
 		if (existing == null)
 		{
@@ -3481,19 +3818,30 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 			LastRepository = path
 		};
 		await settingsStore.SaveAsync(settings);
+		rememberContext.Check();
 		await SortRepositoriesAsync(RepositorySortMode);
+		rememberContext.Check();
 		SelectedRepository = existing;
 	}
 
 	private void ResetHistoryPagination()
 	{
-		historyLoaded = 0;
+        if (git is IHistorySessionService sessionService) sessionService.ResetHistorySession();
+		requests.Invalidate("history");
+		historyState.HistoryLoaded = 0;
 		HasLoadedHistory = false;
 		HasMoreHistory = false;
 	}
 
 	private void ResetRepositoryView(string path)
 	{
+		requests.Switch(path);
+        refreshTask = null;
+        pendingChanges = RepositoryChangeKind.None;
+        lastSnapshot = null;
+		IsCloning = false;
+		IsPulling = false;
+		IsBusy = false;
 		watcher?.Dispose();
 		watcher = null;
 		CancelScheduledDraftSave();
@@ -3530,7 +3878,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		SelectedChange = null;
 		SelectedRightTabIndex = 1;
 		CurrentDocument = null;
-		currentDocumentIsHistorical = false;
+		editorState.CurrentDocumentIsHistorical = false;
 		HasUnsavedEditorChanges = false;
 		IsExternalOnlyDocument = false;
 		CanSaveCurrentDocument = false;
@@ -3538,7 +3886,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		IsBrowsingHistoricalCommit = false;
 		CanModifyFileTree = true;
 		FileTreeContextText = "工作区";
-		fileTreeLoadVersion++;
+		fileTreeState.Invalidate();
 		EditorText = string.Empty;
 		DetailsText = string.Empty;
 		ConflictBaseText = string.Empty;
@@ -3567,7 +3915,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		OperationState = state;
 		HasConflicts = Conflicts.Count > 0;
 		HasSelectedConflict = (object)SelectedConflict != null;
-		bool supportedOperation = state is RepositoryOperationState.Merge or RepositoryOperationState.Rebase or RepositoryOperationState.CherryPick or RepositoryOperationState.Revert;
+		bool supportedOperation = ConflictState.SupportsContinuation(state);
 		CanAbortOperation = supportedOperation;
 		CanContinueOperation = CanAbortOperation && !HasConflicts;
 		string text = state == RepositoryOperationState.Bisect
@@ -3584,41 +3932,33 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	{
 		return state switch
 		{
-			RepositoryOperationState.Merge => "合并",
-			RepositoryOperationState.Rebase => "变基",
-			RepositoryOperationState.CherryPick => "拣选提交",
-			RepositoryOperationState.Revert => "撤销提交",
-			RepositoryOperationState.Bisect => "二分查找",
-			RepositoryOperationState.Unknown => "Git 操作",
-			_ => "操作",
+			RepositoryOperationState.Merge => "合并", 
+			RepositoryOperationState.Rebase => "变基", 
+			RepositoryOperationState.CherryPick => "拣选提交", 
+			RepositoryOperationState.Revert => "撤销提交", 
+			RepositoryOperationState.Bisect => "二分查找", 
+			RepositoryOperationState.Unknown => "Git 操作", 
+			_ => "操作", 
 		};
 	}
 
 	private async Task RunBusyAsync(Func<CancellationToken, Task> action)
 	{
-		if (IsBusy)
-		{
-			return;
-		}
+		if (IsBusy || requestsDisposed) return;
+		using var context = requests.Capture();
 		IsBusy = true;
-		try
-		{
-			await action(CancellationToken.None);
-		}
-		catch (Exception ex)
-		{
-			StatusText = ex.Message;
-		}
-		finally
-		{
-			IsBusy = false;
-		}
+		try { await action(context.Token); }
+		catch (OperationCanceledException) { if (context.IsCurrent) StatusText = "操作已取消，请核对执行结果。"; }
+		catch (Exception error) { if (context.IsCurrent) StatusText = error.Message; }
+		finally { if (context.IsCurrent) IsBusy = false; }
+
 	}
 
 	private void ShowResult(GitOperationResult result)
 	{
 		StatusText = (result.Success ? result.Summary : (result.Summary + "：" + result.ErrorMessage));
 		EquivalentCommand = result.EquivalentCommand;
+		if (result.LogStatus == OperationLogStatus.Failed) StatusText += "（操作结果已保留，日志写入失败）";
 	}
 
 	private static RepositoryMetadata ReadRepositoryMetadata(string path, bool includeSize)
@@ -3667,14 +4007,58 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		return num;
 	}
 
-	private static void Replace<T>(ObservableCollection<T> target, IEnumerable<T> source)
-	{
-		target.Clear();
-		foreach (T item in source)
-		{
-			target.Add(item);
-		}
-	}
+    private static void Replace<T>(ObservableCollection<T> target, IEnumerable<T> source)
+    {
+        var incoming = source.ToArray();
+        var keys = new HashSet<object>(incoming.Select(Key));
+        for (int i = target.Count - 1; i >= 0; i--)
+            if (!keys.Contains(Key(target[i]))) target.RemoveAt(i);
+        var existing = target.ToDictionary(Key);
+        for (int i = 0; i < incoming.Length; i++)
+        {
+            var value = incoming[i];
+            var key = Key(value);
+            if (i < target.Count && Equals(Key(target[i]), key))
+            {
+                if (!Equivalent(target[i], value)) target[i] = value;
+            }
+            else if (existing.TryGetValue(key, out var old))
+            {
+                var position = target.IndexOf(old);
+                if (position >= 0) target.Move(position, i);
+                if (!Equivalent(target[i], value)) target[i] = value;
+            }
+            else target.Insert(i, value);
+        }
+        while (target.Count > incoming.Length) target.RemoveAt(target.Count - 1);
+
+        static object Key(T item) => item switch
+        {
+            FileChange change => (change.Path, change.IsStaged),
+            BranchInfo branch => branch.CanonicalName,
+            TagInfo tag => tag.Name,
+            RemoteInfo remote => remote.Name,
+            CommitNode commit => commit.Id,
+            GitHistoryEvent historyEvent => historyEvent.Id,
+            OperationLogEntry log => log.Id,
+            ConflictFile conflict => conflict.Path,
+            DiffFilePresentation file => file.Path,
+            DiffRegionPresentation region => region.Id,
+            DiffHunk hunk => hunk.Id,
+            RecoveryPoint point => point.Id,
+            StashInfo stash => stash.WorkTreeId,
+            _ => item!
+        };
+        static bool Equivalent(T left, T right) => (left, right) switch
+        {
+            (CommitNode a, CommitNode b) => a with { ParentIds = b.ParentIds } == b && a.ParentIds.SequenceEqual(b.ParentIds),
+            (RemoteInfo a, RemoteInfo b) => a.Name == b.Name && a.FetchUrl == b.FetchUrl && a.PushUrl == b.PushUrl
+                && a.FetchRefSpecs.SequenceEqual(b.FetchRefSpecs) && a.PushRefSpecs.SequenceEqual(b.PushRefSpecs),
+            (OperationLogEntry a, OperationLogEntry b) => a with { Details = b.Details } == b
+                && (a.Details ?? []).SequenceEqual(b.Details ?? []),
+            _ => EqualityComparer<T>.Default.Equals(left, right)
+        };
+    }
 
 	public Task<bool> PrepareForCloseAsync()
 	{
@@ -3683,11 +4067,11 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	private async Task<bool> PrepareForDocumentTransitionAsync(string reason)
 	{
-		await documentTransitionGate.WaitAsync();
+		await editorState.DocumentTransitionGate.WaitAsync();
 		try
 		{
-			await editorSaveGate.WaitAsync();
-			editorSaveGate.Release();
+			await editorState.EditorSaveGate.WaitAsync();
+			editorState.EditorSaveGate.Release();
 
 			TextDocument document = CurrentDocument;
 			if (document == null || !CanSaveCurrentDocument || !HasUnsavedEditorChanges)
@@ -3713,7 +4097,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		}
 		finally
 		{
-			documentTransitionGate.Release();
+			editorState.DocumentTransitionGate.Release();
 		}
 	}
 
@@ -3725,9 +4109,8 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		{
 			return;
 		}
-		draftSaveCancellation = new CancellationTokenSource();
 		_ = SaveDraftAfterDelayAsync(
-			ActiveRepositoryPath, document, EditorText, draftSaveCancellation.Token);
+			ActiveRepositoryPath, document, EditorText, editorState.DraftSaveCancellation.Token);
 	}
 
 	private async Task SaveDraftAfterDelayAsync(
@@ -3744,7 +4127,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 				document.Path,
 				text,
 				document.LastWriteTime,
-				DateTimeOffset.UtcNow), cancellationToken);
+				DateTimeOffset.UtcNow, document.OriginalByteDigest, document.EncodingName, document.HasBom), cancellationToken);
 		}
 		catch (OperationCanceledException)
 		{
@@ -3757,21 +4140,20 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 
 	private void CancelScheduledDraftSave()
 	{
-		draftSaveCancellation.Cancel();
-		draftSaveCancellation.Dispose();
-		draftSaveCancellation = new CancellationTokenSource();
+		editorState.CancelDraftSave();
 	}
 
 	public void Dispose()
 	{
+		if (requestsDisposed) return;
+		requestsDisposed = true;
+		requests.Dispose();
+        if (git is IHistorySessionService sessionService) sessionService.ResetHistorySession();
 		watcher?.Dispose();
 		refreshCancellation.Cancel();
 		refreshCancellation.Dispose();
 		CancelScheduledDraftSave();
-		draftSaveCancellation.Dispose();
-		editorSaveGate.Dispose();
-		documentTransitionGate.Dispose();
-		refreshGate.Dispose();
+		editorState.DraftSaveCancellation.Dispose();
 	}
 
 	private bool IsCurrentDocument(string relativePath)
@@ -3783,12 +4165,12 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 		IsCurrentDocumentFullPath(Path.Combine(ActiveRepositoryPath, relativePath));
 
 	private bool IsCurrentDocumentFullPath(string path) =>
-		CurrentDocument != null && !currentDocumentIsHistorical &&
+		CurrentDocument != null && !editorState.CurrentDocumentIsHistorical &&
 		Path.GetFullPath(path).Equals(Path.GetFullPath(CurrentDocument.Path), StringComparison.OrdinalIgnoreCase);
 
 	private bool PathContainsCurrentDocument(string path)
 	{
-		if (CurrentDocument == null || currentDocumentIsHistorical)
+		if (CurrentDocument == null || editorState.CurrentDocumentIsHistorical)
 		{
 			return false;
 		}
@@ -3828,13 +4210,12 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
 	}
 
 	private static GitOperationResult CanceledOperation(string operation) =>
-		GitOperationResult.Fail(operation, "git " + operation,
-			new OperationCanceledException("用户取消了操作，仓库和当前文档均未更改。"));
+        GitOperationResult.Canceled(operation, string.Empty);
 
 	[GeneratedCode("CommunityToolkit.Mvvm.SourceGenerators.ObservablePropertyGenerator", "8.4.0.0")]
 	private void OnEditorTextChanged(string value)
 	{
-		HasUnsavedEditorChanges = (object)CurrentDocument != null && CanSaveCurrentDocument && !string.Equals(value, CurrentDocument.Text, StringComparison.Ordinal);
+		HasUnsavedEditorChanges = editorState.IsModified(value);
 		ScheduleDraftSave();
 	}
 

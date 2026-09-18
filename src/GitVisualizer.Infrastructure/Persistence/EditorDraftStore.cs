@@ -7,6 +7,10 @@ namespace GitVisualizer.Infrastructure.Persistence;
 
 public sealed class EditorDraftStore : IEditorDraftStore
 {
+    private readonly LocalDataPaths dataPaths;
+
+    public EditorDraftStore(LocalDataPaths? paths = null) => dataPaths = paths ?? LocalPaths.Default;
+
     private static readonly TimeSpan MaxAge = TimeSpan.FromDays(30);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -20,7 +24,7 @@ public sealed class EditorDraftStore : IEditorDraftStore
         string documentPath,
         CancellationToken cancellationToken = default)
     {
-        LocalPaths.EnsureCreated();
+        dataPaths.EnsureCreated();
         var path = DraftPath(repositoryPath, documentPath);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -32,7 +36,8 @@ public sealed class EditorDraftStore : IEditorDraftStore
             var encrypted = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
             var payload = ProtectedData.Unprotect(encrypted, null, DataProtectionScope.CurrentUser);
             var draft = JsonSerializer.Deserialize<EditorDraft>(payload, JsonOptions);
-            if (draft is null ||
+            if (draft is null || draft.Text is null ||
+                string.IsNullOrWhiteSpace(draft.RepositoryPath) || string.IsNullOrWhiteSpace(draft.DocumentPath) ||
                 !PathsEqual(draft.RepositoryPath, repositoryPath) ||
                 !PathsEqual(draft.DocumentPath, documentPath))
             {
@@ -42,17 +47,17 @@ public sealed class EditorDraftStore : IEditorDraftStore
         }
         catch (CryptographicException)
         {
-            File.Delete(path);
+            Quarantine(path);
             return null;
         }
         catch (JsonException)
         {
-            File.Delete(path);
+            Quarantine(path);
             return null;
         }
-        catch (InvalidDataException)
+        catch (Exception exception) when (exception is InvalidDataException or ArgumentException)
         {
-            File.Delete(path);
+            Quarantine(path);
             return null;
         }
         finally
@@ -63,7 +68,7 @@ public sealed class EditorDraftStore : IEditorDraftStore
 
     public async Task SaveAsync(EditorDraft draft, CancellationToken cancellationToken = default)
     {
-        LocalPaths.EnsureCreated();
+        dataPaths.EnsureCreated();
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -95,7 +100,7 @@ public sealed class EditorDraftStore : IEditorDraftStore
         string documentPath,
         CancellationToken cancellationToken = default)
     {
-        LocalPaths.EnsureCreated();
+        dataPaths.EnsureCreated();
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -134,11 +139,11 @@ public sealed class EditorDraftStore : IEditorDraftStore
 
     public async Task PruneAsync(CancellationToken cancellationToken = default)
     {
-        LocalPaths.EnsureCreated();
+        dataPaths.EnsureCreated();
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            foreach (var file in Directory.EnumerateFiles(LocalPaths.DraftDirectory, "*.draft"))
+            foreach (var file in Directory.EnumerateFiles(dataPaths.DraftDirectory, "*.draft"))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (DateTimeOffset.UtcNow - File.GetLastWriteTimeUtc(file) > MaxAge)
@@ -153,6 +158,14 @@ public sealed class EditorDraftStore : IEditorDraftStore
         }
     }
 
+    private void Quarantine(string path)
+    {
+        var directory = Path.Combine(dataPaths.DraftDirectory, "quarantine");
+        Directory.CreateDirectory(directory);
+        // Move the encrypted bytes unchanged; quarantine is excluded from normal expiry/deletion.
+        File.Move(path, Path.Combine(directory, Path.GetFileName(path) + "." + Guid.NewGuid().ToString("N") + ".quarantined"));
+    }
+
     internal static string DraftKey(string repositoryPath, string documentPath)
     {
         var canonical = Path.GetFullPath(repositoryPath).TrimEnd(Path.DirectorySeparatorChar) + "\n" +
@@ -160,8 +173,8 @@ public sealed class EditorDraftStore : IEditorDraftStore
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToUpperInvariant())));
     }
 
-    private static string DraftPath(string repositoryPath, string documentPath) =>
-        Path.Combine(LocalPaths.DraftDirectory, DraftKey(repositoryPath, documentPath) + ".draft");
+    private string DraftPath(string repositoryPath, string documentPath) =>
+        Path.Combine(dataPaths.DraftDirectory, DraftKey(repositoryPath, documentPath) + ".draft");
 
     private static bool PathsEqual(string first, string second) =>
         Path.GetFullPath(first).Equals(Path.GetFullPath(second), StringComparison.OrdinalIgnoreCase);

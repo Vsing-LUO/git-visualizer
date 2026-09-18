@@ -983,6 +983,60 @@ public sealed class GitRepositoryServiceTests
         Assert.DoesNotContain((await service.GetSnapshotAsync(temporary.Path)).Tags, tag => tag.Name == "v-test");
     }
 
+    [Theory]
+    [InlineData("utf8")]
+    [InlineData("utf8bom")]
+    [InlineData("utf16le")]
+    [InlineData("utf16be")]
+    public async Task TextConflictUsesStrictSnapshotsAndPreservesEncoding(string kind)
+    {
+        using var temporary = new TemporaryDirectory();
+        var service = CreateService();
+        await service.InitializeAsync(temporary.Path, Identity);
+        using (var repository = new Repository(temporary.Path)) repository.Config.Set("core.autocrlf", false);
+        System.Text.Encoding encoding = kind switch
+        {
+            "utf8" => new System.Text.UTF8Encoding(false, true),
+            "utf8bom" => new System.Text.UTF8Encoding(true, true),
+            "utf16le" => new System.Text.UnicodeEncoding(false, true, true),
+            _ => new System.Text.UnicodeEncoding(true, true, true)
+        };
+        var path = Path.Combine(temporary.Path, "conflict.txt");
+        await File.WriteAllTextAsync(path, "基础\r\n", encoding);
+        await service.StageFilesAsync(temporary.Path, ["conflict.txt"]);
+        await service.CommitAsync(temporary.Path, "base", Identity);
+        await service.CreateBranchAsync(temporary.Path, "feature");
+        await service.CheckoutBranchAsync(temporary.Path, "feature");
+        await File.WriteAllTextAsync(path, "对方\r\n", encoding);
+        await service.StageFilesAsync(temporary.Path, ["conflict.txt"]);
+        await service.CommitAsync(temporary.Path, "feature", Identity);
+        await service.CheckoutBranchAsync(temporary.Path, "main");
+        await File.WriteAllTextAsync(path, "本地\r\n", encoding);
+        await service.StageFilesAsync(temporary.Path, ["conflict.txt"]);
+        await service.CommitAsync(temporary.Path, "main", Identity);
+        Assert.True((await service.MergeAsync(temporary.Path, "feature", Identity)).Success);
+        // Git itself may generate LF conflict markers; use a known CRLF worktree result.
+        await File.WriteAllTextAsync(path, "待解决\r\n", encoding);
+        var conflict = Assert.Single(await service.GetConflictsAsync(temporary.Path));
+        Assert.False(conflict.IsBinary);
+        Assert.False(conflict.OriginalDocument!.IsReadOnly);
+        Assert.Equal("本地\r\n", conflict.OursText);
+        Assert.Equal("对方\r\n", conflict.TheirsText);
+        await File.WriteAllTextAsync(path, "外部修改\r\n", encoding);
+        File.SetLastWriteTimeUtc(path, conflict.OriginalDocument.LastWriteTime.UtcDateTime);
+        var blocked = await service.ResolveConflictAsync(temporary.Path, conflict.Path, "草稿",
+            originalDocument: conflict.OriginalDocument);
+        Assert.False(blocked.Success);
+        Assert.Equal("外部修改\r\n", await File.ReadAllTextAsync(path));
+        conflict = Assert.Single(await service.GetConflictsAsync(temporary.Path));
+        var resolved = await service.ResolveConflictAsync(temporary.Path, conflict.Path, "解决\n结果",
+            originalDocument: conflict.OriginalDocument);
+        Assert.True(resolved.Success, resolved.ErrorMessage);
+        Assert.Equal(encoding.GetPreamble().Concat(encoding.GetBytes("解决\r\n结果")).ToArray(),
+            await File.ReadAllBytesAsync(path));
+        Assert.Empty(await service.GetConflictsAsync(temporary.Path));
+    }
+
     private static LibGitRepositoryService CreateService() =>
         new(new RecoveryService(), new MemoryOperationLogStore());
 }

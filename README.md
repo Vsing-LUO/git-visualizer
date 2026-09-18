@@ -1,61 +1,59 @@
-# GitVisualizer
+# GitVisualizer v1.3.3
 
-GitVisualizer 是一个面向 Windows 的中文 Git 桌面客户端。界面以提交关系图为中心，支持文件与差异块暂存、分支与标签管理、远程同步、冲突处理、安全恢复和内置文本编辑。
+Windows 桌面 Git 可视化工具，使用 .NET 10、WPF、LibGit2Sharp 和 SQLite。
+提供提交历史、分支管理、差异对比、工作区编辑、远程操作和恢复功能。
 
-当前版本：`1.3.2`
+本仓库由当前 v1.3.3 源码整理而来。外层文件夹名称保留 v1.3.2，不代表源码版本。
+App 保留当前重建源码的文件命名；项目已统一为标准 src/tests 结构。
+
+## 目录
+
+- src/GitVisualizer.App：WPF 应用、界面、资源与图标。
+- src/GitVisualizer.Core：领域模型与接口。
+- src/GitVisualizer.Infrastructure：Git、持久化、文件系统与凭据实现。
+- tests/GitVisualizer.Tests：自动化测试。
+- tools/GitVisualizer.Benchmarks：性能基准。
+- installer：Inno Setup 安装包及卸载程序源码。
+- docs：异步隔离、文本安全和恢复设计说明。
 
 ## 开发环境
 
-- Windows 10/11 x64
-- .NET SDK 10.0.302（由 `global.json` 锁定）
-- Git for Windows（仅开发和诊断需要；应用主要使用 LibGit2Sharp）
+Windows x64、.NET SDK 10.0.302、Git CLI。
+NuGet 依赖通过 nuget.org 还原，无需原工作目录的离线依赖或 DLL。
+运行脚本建议使用 PowerShell 7，并确保 dotnet 和 git 位于 PATH。
 
-依赖通过 NuGet 还原，仓库不包含 SDK、运行时、离线包缓存或编译产物。
+在仓库根目录执行：
 
-```powershell
+~~~powershell
 dotnet restore GitVisualizer.slnx
-dotnet build GitVisualizer.slnx --configuration Release --no-restore
-dotnet test tests/GitVisualizer.Tests/GitVisualizer.Tests.csproj `
-  --configuration Release --no-build
-```
+dotnet build GitVisualizer.slnx -c Release --no-restore
+dotnet test tests/GitVisualizer.Tests/GitVisualizer.Tests.csproj -c Release --no-build
+dotnet run --project src/GitVisualizer.App/GitVisualizer.App.csproj -c Release
+~~~
 
-## 运行与发布
+也可运行 ./Build-And-Test.ps1 完成测试及所需构建。
 
-开发运行：
+## 发布
 
-```powershell
-dotnet run --project src/GitVisualizer.App/GitVisualizer.App.csproj
-```
+~~~powershell
+./Build-CurrentDark.ps1
+~~~
 
-生成 Windows x64 自包含单文件程序：
+生成 Windows x64 自包含单文件程序，默认目录为 artifacts/publish/win-x64。
+用户运行发布版无需安装 .NET。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Build-CurrentDark.ps1
-```
+如需安装包，先安装 Inno Setup 7，再执行：
 
-输出位置：`artifacts\publish\win-x64\GitVisualizer.exe`。
+~~~powershell
+./installer/Build-Release.ps1
+~~~
 
-生成安装程序前请先完成上述发布，然后安装 Inno Setup 6 或 7 并运行：
+默认查找当前用户 LocalAppData/Programs/Inno Setup 7/ISCC.exe。
+输出位于 release/，发布文件可上传 GitHub Releases。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\installer\Build-Installer.ps1
-```
+## 上传 GitHub
 
-## 项目结构
+仅提交此源码目录。构建产物、依赖缓存、本地设置、数据库、凭据和测试结果已由 .gitignore 排除。
+原有 Git 历史保留；本次整理不自动提交或推送。
 
-- `src/GitVisualizer.App`：WPF 界面、视图模型、对话框和编辑器交互
-- `src/GitVisualizer.Core`：领域模型与核心接口
-- `src/GitVisualizer.Infrastructure`：Git、SQLite、文件系统、恢复和凭据实现
-- `tests/GitVisualizer.Tests`：集成测试、WPF 测试和安全工作流测试
-- `installer`：Inno Setup 安装脚本及卸载入口源码
-- `docs`：依赖、开发环境和版本说明
-
-v1.3.2 的 App 层源码来自最终验证版本的源码重建快照；Core、Infrastructure 和测试工程来自同一冻结版本。仓库保留此前版本的提交历史和标签。
-
-## 本地数据与安全
-
-设置、操作历史、恢复点及按天滚动的诊断日志保存在 `%LocalAppData%\GitVisualizer`。HTTPS 凭据保存在 Windows Credential Manager；SSH 使用 Windows SSH Agent。应用不会自动上传诊断数据。
-
-## 许可
-
-本仓库当前未附开源许可证。除非版权所有者另行授权，公开可见不等于授予复制、修改或再分发权利。
+本仓库未新增开源许可证；公开发布时可由项目所有者另行选择许可证。

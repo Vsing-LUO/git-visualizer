@@ -75,7 +75,10 @@ public sealed record EditorDraft(
     string DocumentPath,
     string Text,
     DateTimeOffset BaseLastWriteTime,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? OriginalByteDigest = null,
+    string? EncodingName = null,
+    bool? HasBom = null);
 
 public sealed record RemoteCredential(
     CredentialKind Kind,
@@ -342,6 +345,9 @@ public sealed record GitOperationPreview(
     bool CreatesRecoveryPoint,
     string RecoveryDescription);
 
+public enum GitOperationOutcome { Completed, CanceledBeforeExecution, Failed, PartiallyCompleted }
+public enum OperationLogStatus { NotAttempted, Persisted, Failed }
+
 public sealed record GitOperationResult(
     bool Success,
     string Operation,
@@ -351,8 +357,22 @@ public sealed record GitOperationResult(
     IReadOnlyList<string> Warnings,
     string? ErrorCode = null,
     string? ErrorMessage = null,
-    string? RecoveryPointId = null)
+    string? RecoveryPointId = null,
+    bool WorktreeSaved = false,
+    string? ExecutionStage = null,
+    string? ExecutionRecordPath = null,
+    GitOperationOutcome? OutcomeOverride = null,
+    OperationLogStatus LogStatus = OperationLogStatus.NotAttempted)
 {
+    public GitOperationOutcome Outcome => OutcomeOverride ?? (Success ? GitOperationOutcome.Completed :
+        WorktreeSaved ? GitOperationOutcome.PartiallyCompleted : GitOperationOutcome.Failed);
+
+    public static GitOperationResult Canceled(string operation, string command) =>
+        new(false, operation, "执行前已取消", command, [], [], "Canceled", OutcomeOverride: GitOperationOutcome.CanceledBeforeExecution);
+
+    public static GitOperationResult Interrupted(string operation, string command, Exception exception) =>
+        Fail(operation, command, exception) with { Summary = "操作已中断，可能部分完成，请核对实际状态", OutcomeOverride = GitOperationOutcome.PartiallyCompleted, ErrorCode = "Interrupted", ErrorMessage = exception.Message, Details = [exception.Message] };
+
     public static GitOperationResult Ok(
         string operation,
         string summary,
@@ -369,6 +389,7 @@ public sealed record GitOperationResult(
         string equivalentCommand,
         Exception exception,
         string? errorCode = null) =>
+        exception is OperationCanceledException ? Canceled(operation, equivalentCommand) :
         new(false, operation, "操作失败", equivalentCommand, [exception.Message], [],
             errorCode ?? exception.GetType().Name, exception.Message);
 }
@@ -380,7 +401,12 @@ public sealed record ConflictFile(
     string TheirsText,
     string ResultText,
     bool IsBinary,
-    bool IsResolved);
+    bool IsResolved,
+    TextDocument? OriginalDocument = null,
+    bool IsLoaded = true)
+{
+    public bool IsReadOnly => IsBinary || OriginalDocument is null || OriginalDocument.IsReadOnly;
+}
 
 public sealed record RecoveryPoint(
     string Id,
@@ -431,7 +457,13 @@ public sealed record TextDocument(
     bool IsReadOnly,
     bool IsBinary,
     long Size,
-    byte[]? ContentBytes = null);
+    byte[]? ContentBytes = null,
+    bool HasBom = false,
+    bool HasTrailingNewLine = false,
+    bool HasMixedNewLines = false,
+    string? OriginalByteDigest = null,
+    string? ReadOnlyReason = null,
+    string? ConflictIndexDigest = null);
 
 public sealed class ExternalFileChangedException(string path)
     : IOException("文件已被外部程序修改。")
@@ -444,3 +476,47 @@ public sealed record SystemNewFileType(
     string Extension,
     string DisplayName,
     string SuggestedFileName);
+
+[Flags]
+public enum RepositoryChangeKind
+{
+    None = 0, Worktree = 1, Index = 2, References = 4, Configuration = 8,
+    All = Worktree | Index | References | Configuration
+}
+
+public sealed class RepositoryChangedEventArgs(RepositoryChangeKind changes) : EventArgs
+{
+    public RepositoryChangeKind Changes { get; } = changes;
+}
+
+// Optional optimized capabilities preserve compatibility with test doubles and other providers.
+public interface IIncrementalRepositoryService
+{
+    Task<RepositorySnapshot> GetSnapshotAsync(string path, RepositorySnapshot? previous,
+        RepositoryChangeKind changes, CancellationToken token);
+}
+
+public interface IHistorySessionService
+{
+    void ResetHistorySession();
+}
+
+public interface IConflictDetailsService
+{
+    Task<IReadOnlyList<ConflictFile>> GetConflictMetadataAsync(string repositoryPath, CancellationToken token);
+    Task<ConflictFile> GetConflictAsync(string repositoryPath, string path, CancellationToken token);
+}
+public interface IHistoricalFileExportService
+{
+    Task ExportCommitFileAsync(string repositoryPath, string commitId, string path, string destination, CancellationToken token);
+}
+
+public interface ICommitDiffMetadataService
+{
+    Task<DiffPresentation> GetCommitDiffMetadataAsync(string repositoryPath, string oldCommitId, string newCommitId, CancellationToken token);
+}
+
+public interface ICommitDirectoryService
+{
+    Task<IReadOnlyList<CommitTreeEntry>> GetCommitDirectoryAsync(string repositoryPath, string commitId, string directory, CancellationToken token);
+}

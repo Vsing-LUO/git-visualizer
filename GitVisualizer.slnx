@@ -7,4 +7,5 @@
   <Folder Name="/tests/">
     <Project Path="tests/GitVisualizer.Tests/GitVisualizer.Tests.csproj" />
   </Folder>
-</Solution>
+  <Folder Name="/tools/"><Project Path="tools/GitVisualizer.Benchmarks/GitVisualizer.Benchmarks.csproj" /></Folder></Solution>
+

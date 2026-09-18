@@ -1,107 +1,105 @@
-#define MyAppName "GitVisualizer"
-#define MyAppVersion "1.3.2"
-#define MyAppPublisher "GitVisualizer"
-#define MyAppExeName "GitVisualizer.exe"
-#define MyAppUserModelId "GitVisualizer.App.1.3.2"
+#ifndef AppName
+  #define AppName "GitVisualizer"
+#endif
+#define AppVersion "1.3.3"
+#ifndef LauncherSource
+  #define LauncherSource "bin\卸载 GitVisualizer.exe"
+#endif
 
 [Setup]
+#ifdef TestBuild
+AppId=GitVisualizer.Uninstall.QA
+#else
 AppId={{A7A2199C-88BE-46B2-A11F-1F635E838697}
-AppName={#MyAppName}
-AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} v{#MyAppVersion}
-AppPublisher={#MyAppPublisher}
-AppCopyright=Copyright (C) 2026 GitVisualizer
-VersionInfoVersion=1.3.2.0
-VersionInfoProductVersion=1.3.2
-VersionInfoCompany={#MyAppPublisher}
-VersionInfoDescription=GitVisualizer v1.3.2 安装程序
+#endif
+AppName={#AppName}
+AppVersion={#AppVersion}
+AppVerName={#AppName} v{#AppVersion}
+AppPublisher=GitVisualizer
+VersionInfoVersion=1.3.3.0
+VersionInfoDescription=GitVisualizer 安装程序
 DefaultDirName={autopf}\GitVisualizer
-DefaultGroupName=GitVisualizer
-AllowNoIcons=yes
+DefaultGroupName={#AppName}
 DisableDirPage=no
-DisableProgramGroupPage=no
+DisableProgramGroupPage=yes
+DisableWelcomePage=no
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-WizardStyle=modern dynamic
-SetupIconFile=GitVisualizer.ico
-UninstallDisplayName=GitVisualizer v1.3.2
-UninstallDisplayIcon={app}\uninstall.exe
+WizardStyle=modern
+WizardSizePercent=115
+SetupIconFile=..\src\GitVisualizer.App\Assets\GitVisualizer.ico
+WizardImageFile=assets\wizard.bmp
+WizardSmallImageFile=assets\header.bmp
+UninstallDisplayName=GitVisualizer v{#AppVersion}
+UninstallDisplayIcon={app}\GitVisualizer.exe
 UninstallFilesDir={app}\.uninstall
-OutputDir=output
-OutputBaseFilename=GitVisualizer-v1.3.2-Setup
-Compression=lzma2/ultra64
+OutputDir=..\release
+OutputBaseFilename=GitVisualizer-v{#AppVersion}-Setup
+Compression=lzma2
 SolidCompression=yes
 CloseApplications=yes
+CloseApplicationsFilter=GitVisualizer.exe
 RestartApplications=no
 SetupLogging=yes
 UsePreviousAppDir=yes
-UsePreviousGroup=yes
 UsePreviousTasks=yes
-InfoBeforeFile=Installer-Info.txt
-InfoAfterFile=Installer-Complete.txt
 
 [Languages]
 Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
-Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[LangOptions]
+DialogFontName=Microsoft YaHei UI
+DialogFontSize=9
+WelcomeFontName=Microsoft YaHei UI
+WelcomeFontSize=14
+
+[Messages]
+WelcomeLabel1=欢迎安装 GitVisualizer
+WelcomeLabel2=轻松查看提交历史、管理分支与工作区。%n%n安装向导将帮助您选择安装位置和快捷方式。%n%n本安装包包含运行所需组件，无需另行安装 .NET。
+ConfirmUninstall=是否完全卸载 %1？%n%n将永久删除当前用户的应用设置、操作日志、草稿、恢复点、运行缓存和本程序保存的凭据。%n%n不会删除您的 Git 仓库及其他软件保存的凭据。此操作不可恢复。
 
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式（默认）"; GroupDescription: "附加快捷方式："
-Name: "taskbarguide"; Description: "安装完成后启动 GitVisualizer 并显示任务栏固定指引"; GroupDescription: "任务栏："; Flags: unchecked
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷访问："
 
 [Files]
 Source: "..\artifacts\publish\win-x64\GitVisualizer.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "uninstall.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\docs\RELEASE-NOTES.md"; DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "使用说明.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#LauncherSource}"; DestDir: "{app}"; DestName: "卸载 GitVisualizer.exe"; Flags: ignoreversion
 
 [Dirs]
 Name: "{app}\.uninstall"; Attribs: hidden
 
 [Icons]
-Name: "{group}\GitVisualizer"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#MyAppUserModelId}"
-Name: "{group}\卸载 GitVisualizer"; Filename: "{app}\uninstall.exe"; WorkingDir: "{app}"
-Name: "{userdesktop}\GitVisualizer"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#MyAppUserModelId}"; Tasks: desktopicon
+Name: "{group}\{#AppName}"; Filename: "{app}\GitVisualizer.exe"; WorkingDir: "{app}"; IconFilename: "{app}\GitVisualizer.exe"
+Name: "{group}\卸载 GitVisualizer"; Filename: "{app}\卸载 GitVisualizer.exe"; IconFilename: "{app}\卸载 GitVisualizer.exe"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\GitVisualizer.exe"; WorkingDir: "{app}"; IconFilename: "{app}\GitVisualizer.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "运行 GitVisualizer"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent; Check: not WizardIsTaskSelected('taskbarguide')
+Filename: "{app}\GitVisualizer.exe"; Description: "安装完成后运行 GitVisualizer"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 
 [Code]
-procedure CurStepChanged(CurStep: TSetupStep);
-var
-  ResultCode: Integer;
-  Started: Boolean;
+function RunCleanupHelper(const Mode: String): Boolean;
+var ExitCode: Integer;
 begin
-  if (CurStep = ssPostInstall) and
-     (not WizardSilent) and
-     WizardIsTaskSelected('taskbarguide') then
-  begin
-    Started := Exec(
-      ExpandConstant('{app}\{#MyAppExeName}'),
-      '',
-      ExpandConstant('{app}'),
-      SW_SHOWNORMAL,
-      ewNoWait,
-      ResultCode);
-
-    if Started then
-    begin
-      Sleep(1200);
-      MsgBox(
-        'Windows 要求由您本人确认任务栏固定。' + #13#10 + #13#10 +
-        'GitVisualizer 已启动。请右键单击任务栏上的 GitVisualizer 图标，' +
-        '然后选择“固定到任务栏”。',
-        mbInformation,
-        MB_OK);
-    end
-    else
-    begin
-      MsgBox(
-        '已完成安装，但未能自动启动程序。' + #13#10 +
-        '您可以从开始菜单启动 GitVisualizer，再右键单击其任务栏图标进行固定。',
-        mbInformation,
-        MB_OK);
-    end;
-  end;
+  Result := Exec(ExpandConstant('{app}\卸载 GitVisualizer.exe'), Mode,
+    ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ExitCode);
+  if Result then Result := ExitCode = 0;
 end;
+
+function InitializeUninstall(): Boolean;
+begin
+  Result := RunCleanupHelper('--check');
+  if not Result then
+    SuppressibleMsgBox('无法继续卸载。请先关闭所有 GitVisualizer 窗口；详情见安装目录 .uninstall\cleanup-error.txt。', mbError, MB_OK, IDOK);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    if not RunCleanupHelper('--cleanup') then
+      RaiseException('应用数据未能完全清理，卸载已中止。请关闭占用数据的程序后重试；详情见 .uninstall\cleanup-error.txt。');
+end;
+

@@ -6,13 +6,22 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using GitVisualizer.Core;
+using GitVisualizer.Infrastructure;
 
 namespace GitVisualizer.App.Services;
 
 public static class SystemGitCredentialProvider
 {
-	public static async Task<RemoteCredential?> GetAsync(string remoteUrl, CancellationToken cancellationToken = default(CancellationToken))
+	public static Task<RemoteCredential?> GetAsync(string remoteUrl, CancellationToken cancellationToken = default(CancellationToken)) =>
+		GetAsync(remoteUrl, Process.Start, cancellationToken);
+
+	internal static async Task<RemoteCredential?> GetAsync(string remoteUrl,
+		Func<ProcessStartInfo, Process?> startProcess, CancellationToken cancellationToken = default)
 	{
+		// Guard the process boundary itself, including direct calls that bypass the vault/resolver.
+		if (LocalPaths.Default.IsIsolated)
+			throw new InvalidOperationException("隔离模式禁止启动系统 Git 凭据助手。");
+		cancellationToken.ThrowIfCancellationRequested();
 		if (!IsHttpsAddress(remoteUrl))
 		{
 			return null;
@@ -29,11 +38,8 @@ public static class SystemGitCredentialProvider
 			};
 			processStartInfo.ArgumentList.Add("credential");
 			processStartInfo.ArgumentList.Add("fill");
-			using Process process = new Process
-			{
-				StartInfo = processStartInfo
-			};
-			if (!process.Start())
+			using Process? process = startProcess(processStartInfo);
+			if (process is null)
 			{
 				return null;
 			}

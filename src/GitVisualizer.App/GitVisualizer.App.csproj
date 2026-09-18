@@ -15,7 +15,8 @@
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
     <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
-    <NoWarn>$(NoWarn);CS0618;CS8600;CS8602;CS8603;CS8604;CS8619;CS8625;WFO0003</NoWarn>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);CS0618;CS8600;CS8603;CS8625;WFO0003</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -29,9 +30,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="CommunityToolkit.Mvvm" IncludeAssets="compile;runtime" />
+    <PackageReference Include="CommunityToolkit.Mvvm" ExcludeAssets="analyzers" />
     <PackageReference Include="AvalonEdit" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="LibGit2Sharp" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
   </ItemGroup>
 
   <ItemGroup>
@@ -39,4 +44,7 @@
     <ProjectReference Include="../GitVisualizer.Infrastructure/GitVisualizer.Infrastructure.csproj" />
   </ItemGroup>
 
+
+
 </Project>
+

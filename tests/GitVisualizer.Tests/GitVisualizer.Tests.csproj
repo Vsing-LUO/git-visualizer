@@ -10,8 +10,7 @@
     <ProjectReference Include="../../src/GitVisualizer.Core/GitVisualizer.Core.csproj" />
     <ProjectReference Include="../../src/GitVisualizer.Infrastructure/GitVisualizer.Infrastructure.csproj" />
     <PackageReference Include="AvalonEdit" />
-    <PackageReference Include="CommunityToolkit.Mvvm" IncludeAssets="compile;runtime" />
-    <PackageReference Include="LibGit2Sharp" />
+    <PackageReference Include="CommunityToolkit.Mvvm" ExcludeAssets="analyzers" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio">
@@ -22,3 +21,4 @@
     </PackageReference>
   </ItemGroup>
 </Project>
+

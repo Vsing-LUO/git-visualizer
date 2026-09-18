@@ -27,9 +27,12 @@ public sealed class LibGitIndexPatchService(IOperationLogStore operationLog) : I
             ? $"git apply --cached --reverse <selected-hunks:{path}>"
             : $"git apply --cached <selected-hunks:{path}>";
         var gate = GitServiceSupport.LockFor(repositoryPath);
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        bool locked = false, started = false;
         try
         {
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            locked = true;
+            cancellationToken.ThrowIfCancellationRequested();
             if (hunks.Count == 0 ||
                 hunks.Any(hunk => !hunk.Path.Equals(path, StringComparison.Ordinal) || hunk.IsStaged != reverse))
             {
@@ -37,11 +40,15 @@ public sealed class LibGitIndexPatchService(IOperationLogStore operationLog) : I
             }
             using (var repository = new Repository(repositoryPath))
             {
+                if (LibGitDiffService.IsBudgetLimited(LibGitDiffService.GetPatch(repository, path, reverse)))
+                    throw new InvalidOperationException(LibGitDiffService.BudgetNotice);
                 var currentSnapshot = LibGitDiffService.ComputeSnapshot(repository, path);
                 if (hunks.Any(hunk => !hunk.SnapshotId.Equals(currentSnapshot, StringComparison.Ordinal)))
                 {
                     throw new InvalidOperationException("文件已在差异生成后发生变化，请刷新后重新选择。");
                 }
+                cancellationToken.ThrowIfCancellationRequested();
+                started = true;
                 ApplyToIndex(repository, path, hunks, reverse);
             }
             var result = GitOperationResult.Ok(
@@ -49,18 +56,19 @@ public sealed class LibGitIndexPatchService(IOperationLogStore operationLog) : I
                 reverse ? $"已取消暂存 {hunks.Count} 个差异块" : $"已暂存 {hunks.Count} 个差异块",
                 command,
                 hunks.Select(hunk => hunk.Header));
-            await LogAsync(repositoryPath, result, cancellationToken).ConfigureAwait(false);
-            return result;
+            return await Diagnostics.OperationResultLogging.PersistAsync(result,
+                value => LogAsync(repositoryPath, value, CancellationToken.None)).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
-            var result = GitOperationResult.Fail(operation, command, exception);
-            await LogAsync(repositoryPath, result, CancellationToken.None).ConfigureAwait(false);
-            return result;
+            var result = exception is OperationCanceledException && started
+                ? GitOperationResult.Interrupted(operation, command, exception) : GitOperationResult.Fail(operation, command, exception);
+            return await Diagnostics.OperationResultLogging.PersistAsync(result,
+                value => LogAsync(repositoryPath, value, CancellationToken.None)).ConfigureAwait(false);
         }
         finally
         {
-            gate.Release();
+            if (locked) gate.Release();
         }
     }
 

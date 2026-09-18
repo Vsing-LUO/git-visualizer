@@ -7,32 +7,23 @@ namespace GitVisualizer.Infrastructure.FileSystem;
 
 public sealed class FileWorkspaceService : IFileWorkspaceService
 {
-    private const long MaxEditableSize = 5 * 1024 * 1024;
+    private readonly ISafeFileWriter safeWriter;
+    public FileWorkspaceService() : this(new SafeFileWriter()) { }
+    internal FileWorkspaceService(ISafeFileWriter safeWriter) => this.safeWriter = safeWriter;
+    public Task CreateFileAsync(string repositoryRoot, string path, CancellationToken cancellationToken = default) =>
+        Git.RepositoryWriteLock.RunAsync(repositoryRoot, () => CreateFileCoreAsync(repositoryRoot, path, cancellationToken), cancellationToken);
 
-    public async Task<TextDocument> OpenTextAsync(string path, CancellationToken cancellationToken = default)
-    {
-        var info = new FileInfo(path);
-        if (!info.Exists)
-        {
-            throw new FileNotFoundException("文件不存在。", path);
-        }
+    public Task CreateDirectoryAsync(string repositoryRoot, string path, CancellationToken cancellationToken = default) =>
+        Git.RepositoryWriteLock.RunAsync(repositoryRoot, () => CreateDirectoryCoreAsync(repositoryRoot, path, cancellationToken), cancellationToken);
 
-        var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-        var isBinary = IsBinary(bytes);
-        var encoding = DetectEncoding(bytes, out var preambleLength);
-        var text = isBinary ? string.Empty : encoding.GetString(bytes, preambleLength, bytes.Length - preambleLength);
-        var newLine = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+    public Task MoveAsync(string repositoryRoot, string source, string destination, CancellationToken cancellationToken = default) =>
+        Git.RepositoryWriteLock.RunAsync(repositoryRoot, () => MoveCoreAsync(repositoryRoot, source, destination, cancellationToken), cancellationToken);
 
-        return new TextDocument(
-            path,
-            text,
-            encoding.WebName,
-            newLine,
-            info.LastWriteTimeUtc,
-            info.IsReadOnly || info.Length > MaxEditableSize || isBinary,
-            isBinary,
-            info.Length);
-    }
+    public Task DeleteAsync(string repositoryRoot, string path, CancellationToken cancellationToken = default) =>
+        Git.RepositoryWriteLock.RunAsync(repositoryRoot, () => DeleteCoreAsync(repositoryRoot, path, cancellationToken), cancellationToken);
+
+    public Task<TextDocument> OpenTextAsync(string path, CancellationToken cancellationToken = default) =>
+        TextFileStorage.OpenAsync(path, cancellationToken);
 
     public Task OpenExternalAsync(string path, CancellationToken cancellationToken = default)
     {
@@ -58,49 +49,12 @@ public sealed class FileWorkspaceService : IFileWorkspaceService
         bool allowExternalOverwrite,
         CancellationToken cancellationToken = default)
     {
-        RepositoryPathGuard.EnsureSafe(repositoryRoot, original.Path, includeTargetReparsePoint: true);
-        if (original.IsReadOnly)
-        {
-            throw new InvalidOperationException("此文件当前为只读。");
-        }
-
-        var info = new FileInfo(original.Path);
-        if (!allowExternalOverwrite)
-        {
-            if (!info.Exists)
-            {
-                throw new ExternalFileChangedException(original.Path);
-            }
-            var current = await OpenTextAsync(original.Path, cancellationToken).ConfigureAwait(false);
-            if (current.IsBinary ||
-                !string.Equals(current.Text, original.Text, StringComparison.Ordinal))
-            {
-                throw new ExternalFileChangedException(original.Path);
-            }
-        }
-
-        var encoding = Encoding.GetEncoding(original.EncodingName);
-        var normalized = text.Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace("\n", original.NewLine, StringComparison.Ordinal);
-        var directory = Path.GetDirectoryName(original.Path)
-                        ?? throw new InvalidOperationException("无效的文件路径。");
-        Directory.CreateDirectory(directory);
-        var temporary = Path.Combine(directory, $".{Path.GetFileName(original.Path)}.{Guid.NewGuid():N}.tmp");
-        try
-        {
-            await File.WriteAllTextAsync(temporary, normalized, encoding, cancellationToken).ConfigureAwait(false);
-            File.Move(temporary, original.Path, true);
-        }
-        finally
-        {
-            if (File.Exists(temporary))
-            {
-                File.Delete(temporary);
-            }
-        }
+        // Kept for source compatibility; detected races must never bypass the digest check.
+        await Git.RepositoryWriteLock.RunAsync(repositoryRoot,
+            () => safeWriter.SaveUnderLockAsync(repositoryRoot, original, text, cancellationToken), cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task CreateFileAsync(
+    private async Task CreateFileCoreAsync(
         string repositoryRoot,
         string path,
         CancellationToken cancellationToken = default)
@@ -125,7 +79,7 @@ public sealed class FileWorkspaceService : IFileWorkspaceService
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public Task CreateDirectoryAsync(
+    private Task CreateDirectoryCoreAsync(
         string repositoryRoot,
         string path,
         CancellationToken cancellationToken = default)
@@ -141,7 +95,7 @@ public sealed class FileWorkspaceService : IFileWorkspaceService
         return Task.CompletedTask;
     }
 
-    public Task MoveAsync(
+    private Task MoveCoreAsync(
         string repositoryRoot,
         string source,
         string destination,
@@ -171,7 +125,7 @@ public sealed class FileWorkspaceService : IFileWorkspaceService
         return Task.CompletedTask;
     }
 
-    public Task DeleteAsync(
+    private Task DeleteCoreAsync(
         string repositoryRoot,
         string path,
         CancellationToken cancellationToken = default)
@@ -188,44 +142,6 @@ public sealed class FileWorkspaceService : IFileWorkspaceService
         }
 
         return Task.CompletedTask;
-    }
-
-    private static Encoding DetectEncoding(byte[] bytes, out int preambleLength)
-    {
-        if (bytes.AsSpan().StartsWith(Encoding.UTF8.GetPreamble()))
-        {
-            preambleLength = Encoding.UTF8.GetPreamble().Length;
-            return new UTF8Encoding(true);
-        }
-
-        if (bytes.AsSpan().StartsWith(Encoding.Unicode.GetPreamble()))
-        {
-            preambleLength = Encoding.Unicode.GetPreamble().Length;
-            return Encoding.Unicode;
-        }
-
-        if (bytes.AsSpan().StartsWith(Encoding.BigEndianUnicode.GetPreamble()))
-        {
-            preambleLength = Encoding.BigEndianUnicode.GetPreamble().Length;
-            return Encoding.BigEndianUnicode;
-        }
-
-        preambleLength = 0;
-        return new UTF8Encoding(false);
-    }
-
-    private static bool IsBinary(byte[] bytes)
-    {
-        var sampleLength = Math.Min(bytes.Length, 8192);
-        for (var i = 0; i < sampleLength; i++)
-        {
-            if (bytes[i] == 0)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static async Task CreateEmptyWordDocumentAsync(

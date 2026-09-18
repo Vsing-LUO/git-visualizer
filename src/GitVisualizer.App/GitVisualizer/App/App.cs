@@ -25,6 +25,11 @@ public partial class App : Application
 	protected override async void OnStartup(StartupEventArgs e)
 	{
 		base.OnStartup(e);
+		string? performanceFile = Environment.GetEnvironmentVariable("GITVISUALIZER_PERF_FILE");
+		if (!string.IsNullOrWhiteSpace(performanceFile))
+		{
+			PerformanceRecorder.Current = new PerformanceRecorder(performanceFile);
+		}
 		DiagnosticLog.Initialize();
 		base.DispatcherUnhandledException += OnDispatcherUnhandledException;
 		AppDomain.CurrentDomain.UnhandledException += delegate(object _, UnhandledExceptionEventArgs args)
@@ -63,6 +68,8 @@ public partial class App : Application
 
 	protected override void OnExit(ExitEventArgs e)
 	{
+		PerformanceRecorder.Current?.Dispose();
+		PerformanceRecorder.Current = null;
 		serviceProvider?.Dispose();
 		base.OnExit(e);
 	}

@@ -6,17 +6,30 @@ namespace GitVisualizer.Infrastructure.Persistence;
 
 public sealed class OperationLogStore : IOperationLogStore
 {
+    private sealed class InitializationState
+    {
+        internal readonly SemaphoreSlim Gate = new(1, 1);
+        internal bool Ready;
+    }
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, InitializationState> Initializations =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly LocalDataPaths dataPaths;
+
+    public OperationLogStore(LocalDataPaths? paths = null) => dataPaths = paths ?? LocalPaths.Default;
+
     private readonly SemaphoreSlim gate = new(1, 1);
 
-    private static string ConnectionString =>
-        new SqliteConnectionStringBuilder { DataSource = LocalPaths.DatabaseFile }.ToString();
+    private string ConnectionString =>
+        new SqliteConnectionStringBuilder { DataSource = dataPaths.DatabaseFile }.ToString();
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        LocalPaths.EnsureCreated();
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var state = Initializations.GetOrAdd(Path.GetFullPath(dataPaths.DatabaseFile), _ => new());
+        await state.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (state.Ready) return;
+            dataPaths.EnsureCreated();
             await using var connection = new SqliteConnection(ConnectionString);
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             var command = connection.CreateCommand();
@@ -67,10 +80,11 @@ public sealed class OperationLogStore : IOperationLogStore
                 await migrationCommand.ExecuteNonQueryAsync(cancellationToken)
                     .ConfigureAwait(false);
             }
+            state.Ready = true;
         }
         finally
         {
-            gate.Release();
+            state.Gate.Release();
         }
     }
 
