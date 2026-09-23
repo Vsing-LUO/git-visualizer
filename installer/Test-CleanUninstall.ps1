@@ -1,3 +1,6 @@
+# Copyright 2026 赵泽璇
+# SPDX-License-Identifier: Apache-2.0
+
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $run=Join-Path $root ('validation/uninstall-clean-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
@@ -29,6 +32,11 @@ try {
  if(Test-Path -LiteralPath $install){throw 'Install test directory exists'}
  $p=Start-Process -FilePath (Join-Path $run 'Setup-QA.exe') -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER','/TASKS="desktopicon"',('/DIR="'+$install+'"'),('/LOG="'+(Join-Path $run 'install.log')+'"')) -WindowStyle Hidden -Wait -PassThru
  if($p.ExitCode -ne 0){throw 'QA install failed'}
+ foreach($name in @('LICENSE','NOTICE','THIRD_PARTY_NOTICES.md')) {
+  $installedNotice=Join-Path $install $name
+  if(!(Test-Path -LiteralPath $installedNotice)){throw "Missing installed license document: $name"}
+  if((Get-FileHash -LiteralPath $installedNotice).Hash -ne (Get-FileHash -LiteralPath (Join-Path $root $name)).Hash){throw "Installed license document differs: $name"}
+ }
  $visible=Join-Path $install '卸载 GitVisualizer.exe'
  if(!(Test-Path -LiteralPath $visible)){throw 'Visible uninstaller missing'}
  if((Get-FileHash -LiteralPath $visible).Hash -ne (Get-FileHash -LiteralPath $testHelper).Hash){throw 'Uninstall helper mismatch'}

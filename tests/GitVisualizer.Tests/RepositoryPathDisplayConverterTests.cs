@@ -1,3 +1,6 @@
+// Copyright 2026 赵泽璇
+// SPDX-License-Identifier: Apache-2.0
+
 using GitVisualizer.App.Converters;
 using System.Globalization;
 using System.Windows.Data;

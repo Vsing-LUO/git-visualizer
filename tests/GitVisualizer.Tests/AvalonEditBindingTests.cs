@@ -1,3 +1,6 @@
+// Copyright 2026 赵泽璇
+// SPDX-License-Identifier: Apache-2.0
+
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Data;

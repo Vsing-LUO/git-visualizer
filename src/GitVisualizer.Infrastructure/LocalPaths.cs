@@ -1,3 +1,6 @@
+// Copyright 2026 赵泽璇
+// SPDX-License-Identifier: Apache-2.0
+
 namespace GitVisualizer.Infrastructure;
 
 /// <summary>Immutable storage paths; inject an instance to isolate a service.</summary>

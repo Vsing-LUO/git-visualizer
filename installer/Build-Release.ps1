@@ -1,3 +1,6 @@
+# Copyright 2026 赵泽璇
+# SPDX-License-Identifier: Apache-2.0
+
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $binary = Join-Path $PSScriptRoot 'bin'
@@ -42,8 +45,14 @@ try {
 } finally { $logo.Dispose() }
 & $compiler (Join-Path $PSScriptRoot 'GitVisualizer.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
-Compress-Archive -LiteralPath $exe,(Join-Path $PSScriptRoot '使用说明.txt') -DestinationPath (Join-Path $out 'GitVisualizer-v1.3.3-portable.zip') -Force
+Compress-Archive -LiteralPath $exe,(Join-Path $PSScriptRoot '使用说明.txt'),(Join-Path $root 'LICENSE'),(Join-Path $root 'NOTICE'),(Join-Path $root 'THIRD_PARTY_NOTICES.md') -DestinationPath (Join-Path $out 'GitVisualizer-v1.3.3-portable.zip') -Force
+$archive = [IO.Compression.ZipFile]::Open((Join-Path $out 'GitVisualizer-v1.3.3-portable.zip'), [IO.Compression.ZipArchiveMode]::Update)
+try {
+ Get-ChildItem (Join-Path $root 'docs/licenses') -Recurse -File | ForEach-Object {
+  $entry = [IO.Path]::GetRelativePath($root, $_.FullName).Replace('\', '/')
+  [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $_.FullName, $entry)
+ }
+} finally { $archive.Dispose() }
 Get-ChildItem -LiteralPath $out -File | Where-Object Extension -in @('.exe','.zip') | ForEach-Object {
  ((Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant() + '  ' + $_.Name)
 } | Set-Content -LiteralPath (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
-

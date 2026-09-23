@@ -1,3 +1,6 @@
+// Copyright 2026 赵泽璇
+// SPDX-License-Identifier: Apache-2.0
+
 using GitVisualizer.Infrastructure.FileSystem;
 using System.Text;
 using System.Text.RegularExpressions;

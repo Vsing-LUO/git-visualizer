@@ -1,3 +1,6 @@
+; Copyright 2026 赵泽璇
+; SPDX-License-Identifier: Apache-2.0
+
 #ifndef AppName
   #define AppName "GitVisualizer"
 #endif
@@ -23,6 +26,7 @@ DefaultGroupName={#AppName}
 DisableDirPage=no
 DisableProgramGroupPage=yes
 DisableWelcomePage=no
+LicenseFile=..\LICENSE
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
@@ -65,6 +69,10 @@ ConfirmUninstall=是否完全卸载 %1？%n%n将永久删除当前用户的应�
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷访问："
 
 [Files]
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\NOTICE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\docs\licenses\*"; DestDir: "{app}\docs\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\artifacts\publish\win-x64\GitVisualizer.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "使用说明.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#LauncherSource}"; DestDir: "{app}"; DestName: "卸载 GitVisualizer.exe"; Flags: ignoreversion
@@ -81,6 +89,32 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\GitVisualizer.exe"; WorkingDi
 Filename: "{app}\GitVisualizer.exe"; Description: "安装完成后运行 GitVisualizer"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+procedure BrowseInstallDirectory(Sender: TObject);
+var
+  Directory, ParentDirectory: String;
+begin
+  Directory := WizardForm.DirEdit.Text;
+  { Start at the nearest existing parent when the app folder is not created yet. }
+  while not DirExists(Directory) do
+  begin
+    ParentDirectory := ExtractFileDir(Directory);
+    if (ParentDirectory = Directory) or (ParentDirectory = '') then
+      Break;
+    Directory := ParentDirectory;
+  end;
+  if BrowseForFolder('选择安装位置（将在所选位置下安装 GitVisualizer）', Directory, True) then
+  begin
+    { Keep application files in their own folder; avoid a duplicate suffix. }
+    if CompareText(ExtractFileName(RemoveBackslashUnlessRoot(Directory)), 'GitVisualizer') <> 0 then
+      Directory := AddBackslash(Directory) + 'GitVisualizer';
+    WizardForm.DirEdit.Text := Directory;
+  end;
+end;
+
+procedure InitializeWizard();
+begin
+  WizardForm.DirBrowseButton.OnClick := @BrowseInstallDirectory;
+end;
 function RunCleanupHelper(const Mode: String): Boolean;
 var ExitCode: Integer;
 begin
@@ -102,4 +136,3 @@ begin
     if not RunCleanupHelper('--cleanup') then
       RaiseException('应用数据未能完全清理，卸载已中止。请关闭占用数据的程序后重试；详情见 .uninstall\cleanup-error.txt。');
 end;
-
