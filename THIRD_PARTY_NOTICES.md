@@ -76,7 +76,7 @@ Apache-2.0 适用于项目版权人赵泽璇拥有的项目代码；第三方组
 - 自包含发布还会带入 .NET / Windows Desktop Runtime：主要使用 MIT，并携带 THIRD-PARTY-NOTICES.TXT；实际发布时应保留对应运行时版本的 LICENSE.TXT 和完整第三方声明。本次没有把机器上的全部运行时包都认定为程序依赖。
 - Inno Setup：外部安装器构建工具，适用独立 [Inno Setup License](https://github.com/jrsoftware/issrc/blob/main/license.txt)，不属于 Apache-2.0。保留其既有版权与网址；其附带模块需按实际工具版本检查。
 - 系统 Git CLI：可选外部程序；调用它不等于复制其源码。本仓库没有将 Git CLI 作为源码依赖。若以后捆绑 Git for Windows，须另行满足 GPL 及其组件分发义务。
-- 图片、图标及二进制未添加文件头。仅从仓库无法独立证明每个资源的原始权属，本次依据项目所有者对自有项目的授权，不代替素材来源记录。
+- 项目所有者确认仓库中的图片由本人使用软件创作。应用图标与 Logo 可由仓库中的 `Build-AppIcon.ps1` 生成，安装器位图由 `installer/Build-Release.ps1` 根据 Logo 生成；这些资源未添加文件头。第三方组件及其许可证仍按本清单分别保留。
 
 ## 发布前尚需处理的事项
 

@@ -36,7 +36,7 @@ try {
     $format.Alignment = [Drawing.StringAlignment]::Center
     try {
      $g.DrawString('GitVisualizer',$font,[Drawing.Brushes]::White,[Drawing.RectangleF]::new(0,340,$w,60),$format)
-     $g.DrawString('v1.3.3',$small,[Drawing.Brushes]::LightSteelBlue,[Drawing.RectangleF]::new(0,403,$w,40),$format)
+     $g.DrawString('v2.0.0',$small,[Drawing.Brushes]::LightSteelBlue,[Drawing.RectangleF]::new(0,403,$w,40),$format)
     } finally { $font.Dispose();$small.Dispose();$format.Dispose() }
    }
    $bmp.Save((Join-Path $assets ($kind+'.bmp')),[Drawing.Imaging.ImageFormat]::Bmp)
@@ -45,8 +45,8 @@ try {
 } finally { $logo.Dispose() }
 & $compiler (Join-Path $PSScriptRoot 'GitVisualizer.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
-Compress-Archive -LiteralPath $exe,(Join-Path $PSScriptRoot '使用说明.txt'),(Join-Path $root 'LICENSE'),(Join-Path $root 'NOTICE'),(Join-Path $root 'THIRD_PARTY_NOTICES.md') -DestinationPath (Join-Path $out 'GitVisualizer-v1.3.3-portable.zip') -Force
-$archive = [IO.Compression.ZipFile]::Open((Join-Path $out 'GitVisualizer-v1.3.3-portable.zip'), [IO.Compression.ZipArchiveMode]::Update)
+Compress-Archive -LiteralPath $exe,(Join-Path $PSScriptRoot '使用说明.txt'),(Join-Path $root 'LICENSE'),(Join-Path $root 'NOTICE'),(Join-Path $root 'THIRD_PARTY_NOTICES.md') -DestinationPath (Join-Path $out 'GitVisualizer-v2.0.0-portable.zip') -Force
+$archive = [IO.Compression.ZipFile]::Open((Join-Path $out 'GitVisualizer-v2.0.0-portable.zip'), [IO.Compression.ZipArchiveMode]::Update)
 try {
  Get-ChildItem (Join-Path $root 'docs/licenses') -Recurse -File | ForEach-Object {
   $entry = [IO.Path]::GetRelativePath($root, $_.FullName).Replace('\', '/')

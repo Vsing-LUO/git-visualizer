@@ -10,7 +10,7 @@ GitVisualizer 使用 .NET 10、WPF、LibGit2Sharp 和 SQLite。本文命令均�
 - PowerShell 7（推荐用于构建脚本）
 - Inno Setup 7（仅生成安装包时需要）
 
-NuGet 依赖从 nuget.org 还原，无需 Phase1 工作目录中的离线依赖或提取 DLL。普通用户运行自包含发布包不需要安装 SDK。
+NuGet 依赖从 nuget.org 还原。普通用户运行自包含发布包不需要安装 SDK。
 
 ## 构建、测试与运行
 

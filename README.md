@@ -20,19 +20,19 @@ GitVisualizer 将提交历史、分支关系、文件修改和远程操作放在
 
 ## 下载与安装
 
-当前已发布版本：**v1.3.3**。后续版本请以 [最新 Release](https://github.com/Vsing-LUO/git-visualizer/releases/latest) 为准。
+当前源码版本：**v2.0.0**。安装包与便携包上传后，请以 [最新 Release](https://github.com/Vsing-LUO/git-visualizer/releases/latest) 为准。
 
 | 下载方式 | 适合谁 | 如何使用 |
 |---|---|---|
-| [Windows 安装版 · v1.3.3](https://github.com/Vsing-LUO/git-visualizer/releases/download/v1.3.3/GitVisualizer-v1.3.3-Setup.exe) | 日常使用，推荐 | 运行安装向导，选择目录与快捷方式 |
-| [便携 ZIP · v1.3.3](https://github.com/Vsing-LUO/git-visualizer/releases/download/v1.3.3/GitVisualizer-v1.3.3-portable.zip) | 希望解压后直接运行 | 完整解压后启动 GitVisualizer.exe |
+| [Windows 安装版 · v2.0.0](https://github.com/Vsing-LUO/git-visualizer/releases/download/v2.0.0/GitVisualizer-v2.0.0-Setup.exe) | 日常使用，推荐；上传后可下载 | 运行安装向导，选择目录与快捷方式 |
+| [便携 ZIP · v2.0.0](https://github.com/Vsing-LUO/git-visualizer/releases/download/v2.0.0/GitVisualizer-v2.0.0-portable.zip) | 希望解压后直接运行；上传后可下载 | 完整解压后启动 GitVisualizer.exe |
 | [全部版本与更新说明](https://github.com/Vsing-LUO/git-visualizer/releases) | 查看版本变化或历史下载 | 阅读对应版本的 Release Notes |
 
 支持 Windows 10 / 11 x64。发布包自带 .NET 运行时，无需另装 .NET；不提供 macOS、Linux 或 ARM64 原生版本。
 
 常规 Git 操作由内置库处理；如需复用系统 Git 的 HTTPS 凭据助手，请安装并配置 Git CLI。访问远程仓库需要网络连接及对应账户权限。
 
-> 当前 v1.3.3 安装包未进行代码签名，Windows 可能显示 SmartScreen 提示。请从本仓库 Releases 下载，并核对文件来源；遇到不确定的安全提示时不要直接忽略。
+> 安装包如未进行代码签名，Windows 可能显示 SmartScreen 提示。请从本仓库 Releases 下载，并核对文件来源；遇到不确定的安全提示时不要直接忽略。
 
 GitHub 自动生成的 “Source code” 压缩包是源码，不是可直接运行的桌面程序。便携版免安装，但设置与恢复数据默认仍写入当前用户的应用数据目录。
 
@@ -93,7 +93,7 @@ GitHub 自动生成的 “Source code” 压缩包是源码，不是可直接运
 以下为计划方向，尚未全部实现，不代表已经支持或承诺交付日期：
 
 - [ ] 完善新手教程与真实操作演示
-- [ ] 建立自动构建、测试与版本发布流程
+- [ ] 建立安装包自动发布流程
 - [ ] 完善发布包中的第三方许可声明与校验信息
 - [ ] 改善代码签名与安装信任体验
 - [ ] 评估 WinGet 与 Microsoft Store 分发

@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("卸载 GitVisualizer")]
 [assembly: AssemblyProduct("GitVisualizer")]
 [assembly: AssemblyCompany("GitVisualizer")]
-[assembly: AssemblyFileVersion("1.3.3.1")]
-[assembly: AssemblyVersion("1.3.3.1")]
+[assembly: AssemblyFileVersion("2.0.0.0")]
+[assembly: AssemblyVersion("2.0.0.0")]
 
 internal static class UninstallLauncher
 {

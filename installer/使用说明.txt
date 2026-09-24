@@ -1,4 +1,4 @@
-GitVisualizer v1.3.3
+GitVisualizer v2.0.0
 Windows 10 / 11 · x64
 
 开始使用

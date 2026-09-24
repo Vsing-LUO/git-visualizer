@@ -4,7 +4,7 @@
 #ifndef AppName
   #define AppName "GitVisualizer"
 #endif
-#define AppVersion "1.3.3"
+#define AppVersion "2.0.0"
 #ifndef LauncherSource
   #define LauncherSource "bin\卸载 GitVisualizer.exe"
 #endif
@@ -19,7 +19,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} v{#AppVersion}
 AppPublisher=GitVisualizer
-VersionInfoVersion=1.3.3.0
+VersionInfoVersion=2.0.0.0
 VersionInfoDescription=GitVisualizer 安装程序
 DefaultDirName={autopf}\GitVisualizer
 DefaultGroupName={#AppName}
